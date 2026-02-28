@@ -1,0 +1,19 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# macOS
+.DS_Store
+
+# Electron build output
+out/
+release/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Env / secrets
+.env
+.env.*
+!.env.example

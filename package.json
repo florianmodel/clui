@@ -1,0 +1,17 @@
+{
+  "name": "gui-bridge",
+  "private": true,
+  "main": "packages/main/dist/index.js",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run build -w packages/shared && npm run build -w packages/main && concurrently -k -n renderer,electron -c cyan,yellow \"npm run dev -w packages/renderer\" \"wait-on http://localhost:5173 && NODE_ENV=development electron .\"",
+    "build": "npm run build -w packages/shared && npm run build -w packages/renderer && npm run build -w packages/main",
+    "lint": "eslint \"packages/*/src/**/*.{ts,tsx}\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "wait-on": "^8.0.3"
+  }
+}
