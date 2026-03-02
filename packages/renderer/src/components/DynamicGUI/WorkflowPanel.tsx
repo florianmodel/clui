@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import type { Workflow, UISchema, ExecCompleteEvent, ExecLogEvent } from '@gui-bridge/shared';
 import { useLogEvents, useCompleteEvent } from '../../hooks/useIPC.js';
 import { StepRenderer } from './StepRenderer.js';
@@ -12,6 +12,7 @@ interface Props {
 }
 
 type RunStatus = 'idle' | 'running' | 'done' | 'error';
+type FixStatus = 'idle' | 'thinking' | 'ready' | 'rerunning' | 'save-prompt';
 
 /** Build command preview in the renderer (no Node.js — uses own basename). */
 function buildPreview(workflow: Workflow, inputs: Record<string, unknown>): string {
@@ -51,6 +52,22 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
   const [outputDir, setOutputDir] = useState<string>('');
   const [outputDirError, setOutputDirError] = useState<string>('');
 
+  // Local mutable workflow copy — updated when auto-fix accepts a new command template
+  const [currentWorkflow, setCurrentWorkflow] = useState<Workflow>(workflow);
+
+  // Auto-fix state
+  const [fixStatus, setFixStatus] = useState<FixStatus>('idle');
+  const [fixedTemplate, setFixedTemplate] = useState<string | null>(null);
+  const [fixExplanation, setFixExplanation] = useState<string | null>(null);
+  const [failedCommand, setFailedCommand] = useState<string>('');
+
+  // Keep a ref in sync so the complete-event callback can read fixStatus without a stale closure
+  const fixStatusRef = useRef<FixStatus>('idle');
+  useEffect(() => { fixStatusRef.current = fixStatus; }, [fixStatus]);
+
+  // Accumulated error output for the auto-fix request — use a ref to avoid re-renders
+  const errorOutputRef = useRef('');
+
   // Load desktop path as default output dir once on mount
   useEffect(() => {
     window.electronAPI.app.getDesktopPath().then((p) => {
@@ -58,13 +75,28 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
     });
   }, []);
 
-  // Reset form state when workflow changes (keep outputDir — user's preference)
+  // Reset all state when the workflow prop changes (tab switch)
   useEffect(() => {
+    setCurrentWorkflow(workflow);
     setValues(initValues(workflow));
     setErrors({});
     setRunStatus('idle');
     setOutputFiles([]);
+    setFixStatus('idle');
+    setFixedTemplate(null);
+    setFixExplanation(null);
+    setFailedCommand('');
+    errorOutputRef.current = '';
   }, [workflow.id]);
+
+  // Capture stderr/system lines for the auto-fix request
+  useEffect(() => {
+    return window.electronAPI.on.log((event) => {
+      if (event.stream === 'stderr' || event.stream === 'system') {
+        errorOutputRef.current += event.line + '\n';
+      }
+    });
+  }, []);
 
   // Forward streamed logs to App.tsx
   useLogEvents(onLog);
@@ -76,13 +108,21 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
         if (event.exitCode === 0) {
           setOutputFiles(event.outputFiles);
           setRunStatus('done');
+          // If this was a successful re-run after accepting a fix, prompt to save
+          if (fixStatusRef.current === 'rerunning') {
+            setFixStatus('save-prompt');
+          }
           onLog({
             stream: 'system',
-            line: workflow.execute.successMessage ?? `Done! Output: ${event.outputFiles.join(', ') || '(none)'}`,
+            line: currentWorkflow.execute.successMessage ?? `Done! Output: ${event.outputFiles.join(', ') || '(none)'}`,
             timestamp: Date.now(),
           });
         } else {
           setRunStatus('error');
+          // If the fix attempt also failed, reset fix state so user can try again
+          if (fixStatusRef.current === 'rerunning') {
+            setFixStatus('idle');
+          }
           onLog({
             stream: 'system',
             line: `Process exited with code ${event.exitCode}. ${event.error ?? ''}`,
@@ -90,23 +130,21 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
           });
         }
       },
-      [workflow, onLog],
+      [currentWorkflow, onLog],
     ),
   );
 
   function handleChange(stepId: string, value: unknown) {
     setValues((prev) => ({ ...prev, [stepId]: value }));
-    // Clear error on change
     if (errors[stepId]) {
       setErrors((prev) => { const e = { ...prev }; delete e[stepId]; return e; });
     }
   }
 
-  function validate(): boolean {
+  function validate(wf: Workflow = currentWorkflow): boolean {
     const newErrors: Record<string, string> = {};
 
-    for (const step of workflow.steps) {
-      // Check showIf — skip hidden steps
+    for (const step of wf.steps) {
       if (step.showIf) {
         const { stepId, equals } = step.showIf;
         if (values[stepId] !== equals) continue;
@@ -141,8 +179,9 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
     }
   }
 
-  async function handleRun() {
-    if (!validate()) return;
+  async function handleRun(workflowOverride?: Workflow) {
+    const wf = workflowOverride ?? currentWorkflow;
+    if (!validate(wf)) return;
     if (!outputDir) {
       setOutputDirError('Please select an output folder');
       return;
@@ -152,9 +191,13 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
     onClearLogs();
     setOutputFiles([]);
     setRunStatus('running');
+    // Reset error capture buffer for this new run
+    errorOutputRef.current = '';
+    // Capture command for potential auto-fix request
+    setFailedCommand(buildPreview(wf, values));
 
     const response = await window.electronAPI.exec.schemaRun({
-      workflow,
+      workflow: wf,
       dockerImage: schema.dockerImage,
       dockerfilePath: schema.dockerfilePath,
       inputs: values,
@@ -166,11 +209,74 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
     }
   }
 
-  const busy = runStatus === 'running';
-  const commandPreview = buildPreview(workflow, values);
+  async function handleAutofix() {
+    setFixStatus('thinking');
 
-  // Determine visible steps (respecting showIf)
-  const visibleSteps = workflow.steps.filter((step) => {
+    const res = await window.electronAPI.exec.autofix({
+      workflow: currentWorkflow,
+      failedCommand,
+      errorOutput: errorOutputRef.current.slice(-1500),
+    });
+
+    if (!res.ok || !res.template || !res.explanation) {
+      setFixStatus('idle');
+      onLog({
+        stream: 'system',
+        line: `Auto-fix failed: ${res.error ?? 'No suggestion returned.'}`,
+        timestamp: Date.now(),
+      });
+      return;
+    }
+
+    setFixedTemplate(res.template);
+    setFixExplanation(res.explanation);
+    setFixStatus('ready');
+  }
+
+  async function handleAcceptFix() {
+    if (!fixedTemplate) return;
+
+    const updatedWorkflow: Workflow = {
+      ...currentWorkflow,
+      execute: { ...currentWorkflow.execute, command: fixedTemplate },
+    };
+    setCurrentWorkflow(updatedWorkflow);
+    setFixStatus('rerunning');
+    await handleRun(updatedWorkflow);
+  }
+
+  function handleDismissFix() {
+    setFixStatus('idle');
+    setFixedTemplate(null);
+    setFixExplanation(null);
+  }
+
+  async function handleSaveFix() {
+    // Build the updated full schema, replacing this workflow's execute.command
+    const updatedSchema: UISchema = {
+      ...schema,
+      workflows: schema.workflows.map((w) =>
+        w.id === currentWorkflow.id ? currentWorkflow : w,
+      ),
+    };
+
+    const res = await window.electronAPI.schema.save({ schema: updatedSchema });
+
+    if (res.ok && res.saved) {
+      onLog({ stream: 'system', line: 'Fix saved to schema cache.', timestamp: Date.now() });
+    } else if (res.ok && !res.saved) {
+      onLog({ stream: 'system', line: 'Fix applied in memory (schema is not cached — no file to update).', timestamp: Date.now() });
+    } else {
+      onLog({ stream: 'system', line: `Could not save fix: ${res.error ?? 'unknown error'}`, timestamp: Date.now() });
+    }
+
+    setFixStatus('idle');
+  }
+
+  const busy = runStatus === 'running' || fixStatus === 'thinking' || fixStatus === 'rerunning';
+  const commandPreview = buildPreview(currentWorkflow, values);
+
+  const visibleSteps = currentWorkflow.steps.filter((step) => {
     if (!step.showIf) return true;
     const { stepId, equals } = step.showIf;
     return values[stepId] === equals;
@@ -180,15 +286,15 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
     <div style={styles.container}>
       {/* Workflow header */}
       <div style={styles.header}>
-        <h2 style={styles.name}>{workflow.name}</h2>
-        <p style={styles.description}>{workflow.description}</p>
+        <h2 style={styles.name}>{currentWorkflow.name}</h2>
+        <p style={styles.description}>{currentWorkflow.description}</p>
       </div>
 
       {/* Guidance box */}
-      {workflow.guidance && (
+      {currentWorkflow.guidance && (
         <div style={styles.guidance}>
           <span style={styles.guidanceIcon}>💡</span>
-          {workflow.guidance}
+          {currentWorkflow.guidance}
         </div>
       )}
 
@@ -234,16 +340,22 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
             background: runStatus === 'done' ? 'var(--green)' : 'var(--accent)',
             opacity: busy ? 0.7 : 1,
           }}
-          onClick={handleRun}
+          onClick={() => handleRun()}
           disabled={busy}
         >
-          {busy && '⏳ Running…'}
-          {runStatus === 'idle' && '▶ Run'}
-          {runStatus === 'done' && '✓ Done — Run Again'}
-          {runStatus === 'error' && '✗ Error — Retry'}
+          {(fixStatus === 'thinking') && '🔍 Analyzing error…'}
+          {(fixStatus === 'rerunning') && '⏳ Re-running with fix…'}
+          {(fixStatus !== 'thinking' && fixStatus !== 'rerunning') && (
+            <>
+              {busy && '⏳ Running…'}
+              {!busy && runStatus === 'idle' && '▶ Run'}
+              {!busy && runStatus === 'done' && '✓ Done — Run Again'}
+              {!busy && runStatus === 'error' && '✗ Error — Retry'}
+            </>
+          )}
         </button>
 
-        {busy && (
+        {busy && fixStatus !== 'thinking' && fixStatus !== 'rerunning' && (
           <button
             type="button"
             style={styles.stopBtn}
@@ -254,13 +366,67 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
         )}
       </div>
 
+      {/* Auto-fix button — shown after an error, when not already fixing */}
+      {runStatus === 'error' && fixStatus === 'idle' && (
+        <button type="button" style={styles.autofixBtn} onClick={handleAutofix}>
+          🔧 Auto-fix with AI
+        </button>
+      )}
+
+      {/* Fix suggestion card */}
+      {fixStatus === 'ready' && fixedTemplate && (
+        <div style={styles.fixCard}>
+          <div style={styles.fixTitle}>Suggested fix</div>
+          {fixExplanation && (
+            <div style={styles.fixExplanation}>&ldquo;{fixExplanation}&rdquo;</div>
+          )}
+          <div style={styles.fixDiff}>
+            <div style={styles.fixDiffRow}>
+              <span style={styles.fixLabel}>Before</span>
+              <code style={{ ...styles.fixCode, color: 'var(--red)' }}>
+                {currentWorkflow.execute.command}
+              </code>
+            </div>
+            <div style={styles.fixDiffRow}>
+              <span style={styles.fixLabel}>After</span>
+              <code style={{ ...styles.fixCode, color: 'var(--green)' }}>
+                {fixedTemplate}
+              </code>
+            </div>
+          </div>
+          <div style={styles.fixActions}>
+            <button type="button" style={styles.acceptBtn} onClick={handleAcceptFix}>
+              Accept &amp; Re-run
+            </button>
+            <button type="button" style={styles.dismissBtn} onClick={handleDismissFix}>
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Save-fix prompt — shown after a successful re-run with a fix */}
+      {fixStatus === 'save-prompt' && (
+        <div style={styles.savePrompt}>
+          <span>💾 Save this fix so future runs use the corrected command?</span>
+          <div style={styles.savePromptActions}>
+            <button type="button" style={styles.saveBtn} onClick={handleSaveFix}>
+              Save
+            </button>
+            <button type="button" style={styles.dismissBtn} onClick={() => setFixStatus('idle')}>
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Command preview */}
       <CommandPreview command={commandPreview} />
 
       {/* Estimated duration */}
-      {workflow.execute.estimatedDuration && (
+      {currentWorkflow.execute.estimatedDuration && (
         <div style={styles.estimate}>
-          Estimated: {workflow.execute.estimatedDuration}
+          Estimated: {currentWorkflow.execute.estimatedDuration}
         </div>
       )}
 
@@ -327,6 +493,59 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid var(--red)', borderRadius: 10,
     background: 'transparent', color: 'var(--red)',
     fontWeight: 700, fontSize: 14, padding: '12px 20px', cursor: 'pointer',
+  },
+  autofixBtn: {
+    border: '1px solid rgba(167, 139, 250, 0.4)',
+    borderRadius: 10, background: 'rgba(167, 139, 250, 0.08)',
+    color: '#a78bfa', fontWeight: 600, fontSize: 14,
+    padding: '10px 20px', cursor: 'pointer', textAlign: 'center',
+  },
+  // Fix card
+  fixCard: {
+    display: 'flex', flexDirection: 'column', gap: 12,
+    padding: '14px 16px',
+    background: 'rgba(167, 139, 250, 0.06)',
+    border: '1px solid rgba(167, 139, 250, 0.3)',
+    borderRadius: 10,
+  },
+  fixTitle: { fontSize: 13, fontWeight: 700, color: '#a78bfa' },
+  fixExplanation: { fontSize: 13, color: 'var(--text)', fontStyle: 'italic' },
+  fixDiff: { display: 'flex', flexDirection: 'column', gap: 8 },
+  fixDiffRow: { display: 'flex', alignItems: 'baseline', gap: 10 },
+  fixLabel: {
+    fontSize: 11, fontWeight: 700, letterSpacing: '0.05em',
+    textTransform: 'uppercase', color: 'var(--text-muted)',
+    flexShrink: 0, width: 42,
+  },
+  fixCode: {
+    fontFamily: 'var(--font-mono)', fontSize: 12,
+    wordBreak: 'break-all', lineHeight: 1.5,
+  },
+  fixActions: { display: 'flex', gap: 8 },
+  acceptBtn: {
+    border: 'none', borderRadius: 8,
+    background: '#a78bfa', color: '#0f0c29',
+    fontWeight: 700, fontSize: 13, padding: '8px 16px', cursor: 'pointer',
+  },
+  dismissBtn: {
+    border: '1px solid var(--border)', borderRadius: 8,
+    background: 'transparent', color: 'var(--text-muted)',
+    fontWeight: 600, fontSize: 13, padding: '8px 16px', cursor: 'pointer',
+  },
+  // Save prompt
+  savePrompt: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    gap: 12, flexWrap: 'wrap',
+    padding: '10px 14px',
+    background: 'rgba(52, 211, 153, 0.06)',
+    border: '1px solid rgba(52, 211, 153, 0.3)',
+    borderRadius: 10, fontSize: 13, color: 'var(--text)',
+  },
+  savePromptActions: { display: 'flex', gap: 8, flexShrink: 0 },
+  saveBtn: {
+    border: 'none', borderRadius: 8,
+    background: 'var(--green)', color: '#0f0c29',
+    fontWeight: 700, fontSize: 13, padding: '6px 14px', cursor: 'pointer',
   },
   estimate: {
     fontSize: 12, color: 'var(--text-muted)',

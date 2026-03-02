@@ -34,6 +34,25 @@ export enum IPCChannel {
   // Progress events (push: main → renderer)
   ANALYSIS_PROGRESS = 'analysis:progress',
 
+  // Auto-fix (LLM-powered command correction)
+  EXEC_AUTOFIX = 'exec:autofix',
+
+  // Schema save (persist fixed schema to cache)
+  SCHEMA_SAVE = 'schema:save',
+
+  // GitHub search
+  GITHUB_SEARCH = 'github:search',
+
+  // Project management
+  PROJECT_INSTALL = 'project:install',
+  PROJECT_INSTALL_PROGRESS = 'project:installProgress', // push: main → renderer
+  PROJECT_LIST = 'project:list',
+  PROJECT_GET = 'project:get',
+  PROJECT_REMOVE = 'project:remove',
+  PROJECT_OPEN_FOLDER = 'project:openFolder',
+  PROJECT_GENERATE_UI = 'project:generateUi',
+  PROJECT_IMPROVE = 'project:improve',
+
   // App
   APP_GET_PATH = 'app:getPath',
 
@@ -206,4 +225,134 @@ export interface AnalysisProgressEvent {
   stage: 'detecting' | 'readme' | 'introspecting' | 'help' | 'generating-ui' | 'complete' | 'error';
   message: string;
   detail?: string;
+}
+
+export interface ExecAutofixRequest {
+  workflow: Workflow;
+  failedCommand: string;
+  errorOutput: string;
+}
+
+export interface ExecAutofixResponse {
+  ok: boolean;
+  template?: string;
+  explanation?: string;
+  error?: string;
+}
+
+export interface SchemaSaveRequest {
+  schema: UISchema;
+}
+
+export interface SchemaSaveResponse {
+  ok: boolean;
+  /** false = no cached entry matched the dockerImage (e.g. bundled example schema) */
+  saved: boolean;
+  error?: string;
+}
+
+// ── GitHub search ──────────────────────────────────────────────────────────
+
+export interface SearchResult {
+  owner: string;
+  repo: string;
+  fullName: string;
+  description: string;
+  stars: number;
+  language: string;
+  topics: string[];
+  lastUpdated: string; // ISO date string
+  license?: string;
+  htmlUrl: string;
+}
+
+export interface GithubSearchRequest {
+  query: string;
+}
+
+export interface GithubSearchResponse {
+  ok: boolean;
+  results?: SearchResult[];
+  error?: string;
+  rateLimited?: boolean;
+}
+
+// ── Project management ─────────────────────────────────────────────────────
+
+export type ProjectStatus = 'ready' | 'no-schema' | 'error';
+
+export interface ProjectMeta {
+  projectId: string;  // "{owner}--{repo}"
+  owner: string;
+  repo: string;
+  fullName: string;
+  description: string;
+  language: string;
+  stars: number;
+  installedAt: string;
+  dockerImage: string;
+  status: ProjectStatus;
+  error?: string;
+  repoDir: string;
+  /** Absolute path to schema.json, if generated */
+  schemaPath?: string;
+}
+
+export interface InstallProgressEvent {
+  projectId: string;
+  stage: 'cloning' | 'detecting' | 'building' | 'analyzing' | 'generating' | 'complete' | 'error';
+  message: string;
+}
+
+export interface ProjectInstallRequest {
+  owner: string;
+  repo: string;
+  searchResult: SearchResult;
+}
+
+export interface ProjectInstallResponse {
+  ok: boolean;
+  meta?: ProjectMeta;
+  error?: string;
+}
+
+export interface ProjectListResponse {
+  projects: ProjectMeta[];
+}
+
+export interface ProjectGetRequest {
+  projectId: string;
+}
+
+export interface ProjectGetResponse {
+  ok: boolean;
+  meta?: ProjectMeta;
+  schema?: UISchema;
+  error?: string;
+}
+
+export interface ProjectRemoveRequest {
+  projectId: string;
+}
+
+export interface ProjectGenerateUiRequest {
+  projectId: string;
+}
+
+export interface ProjectGenerateUiResponse {
+  ok: boolean;
+  schema?: UISchema;
+  error?: string;
+}
+
+export interface ProjectImproveRequest {
+  projectId: string;
+  feedback: string;
+  currentSchema: UISchema;
+}
+
+export interface ProjectImproveResponse {
+  ok: boolean;
+  schema?: UISchema;
+  error?: string;
 }

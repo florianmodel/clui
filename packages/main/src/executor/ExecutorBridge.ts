@@ -19,11 +19,20 @@ export function buildCommand(workflow: Workflow, inputs: Record<string, unknown>
       const filename = path.basename(String(files[0]));
       cmd = cmd.replaceAll(`{${stepId}}`, filename);
     } else if (step?.type === 'checkbox' || step?.type === 'toggle') {
-      cmd = cmd.replaceAll(`{${stepId}}`, value ? 'true' : 'false');
+      if (value) {
+        // Replace {step_id} with --step-id flag when enabled
+        const flagName = '--' + stepId.replace(/_/g, '-');
+        cmd = cmd.replaceAll(`{${stepId}}`, flagName);
+      }
+      // If false/unchecked, leave the placeholder — cleanup below will strip it
     } else {
       cmd = cmd.replaceAll(`{${stepId}}`, String(value));
     }
   }
+
+  // Strip any remaining unfilled {placeholder} tokens (optional steps left empty)
+  // Also remove any leading/trailing whitespace left by stripped tokens
+  cmd = cmd.replace(/\s*\{[^}]+\}/g, '').trim();
 
   return cmd;
 }
