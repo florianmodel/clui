@@ -39,14 +39,22 @@ export interface Step {
   multiple?: boolean;        // file_input
   min?: number;              // number
   max?: number;              // number
+  step?: number;             // number (increment)
   validation?: ValidationRule;
+
+  // Conditional visibility
+  showIf?: {
+    stepId: string;
+    equals: string | number | boolean;
+  };
 }
 
 export interface ExecutionConfig {
-  command: string;          // Template with {step_id} placeholders
-  outputDir: string;        // Container path (usually /output)
-  outputPattern?: string;   // Glob for expected output files
+  command: string;              // Template with {step_id} placeholders
+  outputDir: string;            // Container path (usually /output)
+  outputPattern?: string;       // Glob for expected output files
   successMessage?: string;
+  estimatedDuration?: string;   // e.g. "~30 seconds per minute of video"
 }
 
 export interface Workflow {
@@ -63,5 +71,8 @@ export interface UISchema {
   projectName: string;
   description: string;
   version: string;
+  icon?: string;              // emoji or icon name
+  dockerImage: string;        // Docker image tag to use for execution
+  dockerfilePath?: string;    // Relative path to Dockerfile for auto-build
   workflows: Workflow[];
 }

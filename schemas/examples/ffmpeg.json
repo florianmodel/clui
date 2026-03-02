@@ -1,0 +1,110 @@
+{
+  "projectId": "ffmpeg",
+  "projectName": "FFmpeg",
+  "description": "Universal media converter — convert video, extract audio, and more",
+  "version": "1.0.0",
+  "icon": "🎬",
+  "dockerImage": "gui-bridge-ffmpeg-test",
+  "dockerfilePath": "docker/ffmpeg-test.Dockerfile",
+  "workflows": [
+    {
+      "id": "convert-video",
+      "name": "Convert Video",
+      "description": "Convert a video file to a different format",
+      "guidance": "Select your video file, choose the output format and quality, then hit Run. The converted file will appear below when done.",
+      "steps": [
+        {
+          "id": "input_file",
+          "label": "Input Video",
+          "guidance": "Select the video file you want to convert",
+          "type": "file_input",
+          "required": true,
+          "accept": ".mp4,.avi,.mkv,.mov,.webm,.flv"
+        },
+        {
+          "id": "output_format",
+          "label": "Output Format",
+          "description": "Choose the container format for the output file",
+          "type": "dropdown",
+          "required": true,
+          "default": "mp4",
+          "options": [
+            { "value": "mp4",  "label": "MP4",  "description": "Best compatibility" },
+            { "value": "avi",  "label": "AVI",  "description": "Legacy format" },
+            { "value": "webm", "label": "WebM", "description": "Web-optimized" },
+            { "value": "mov",  "label": "MOV",  "description": "Apple / Final Cut" }
+          ]
+        },
+        {
+          "id": "quality",
+          "label": "Quality Preset",
+          "description": "Higher quality means slower encoding and larger file size",
+          "type": "radio",
+          "required": true,
+          "default": "medium",
+          "options": [
+            { "value": "slow",   "label": "High",    "description": "best quality, slowest" },
+            { "value": "medium", "label": "Medium",  "description": "balanced" },
+            { "value": "fast",   "label": "Fast",    "description": "quickest, smallest file" }
+          ]
+        }
+      ],
+      "execute": {
+        "command": "ffmpeg -i /input/{input_file} -preset {quality} -y /output/output.{output_format}",
+        "outputDir": "/output",
+        "outputPattern": "output.*",
+        "successMessage": "Your video has been converted!",
+        "estimatedDuration": "~30 seconds per minute of video"
+      }
+    },
+    {
+      "id": "extract-audio",
+      "name": "Extract Audio",
+      "description": "Pull the audio track from a video file",
+      "guidance": "Pick a video, choose the audio format, and click Run. The audio file will be saved to the output folder.",
+      "steps": [
+        {
+          "id": "input_file",
+          "label": "Input Video",
+          "guidance": "Select the video file to extract audio from",
+          "type": "file_input",
+          "required": true,
+          "accept": ".mp4,.avi,.mkv,.mov,.webm,.flv"
+        },
+        {
+          "id": "audio_format",
+          "label": "Audio Format",
+          "type": "dropdown",
+          "required": true,
+          "default": "mp3",
+          "options": [
+            { "value": "mp3",  "label": "MP3",  "description": "Most compatible" },
+            { "value": "aac",  "label": "AAC",  "description": "Better quality at same size" },
+            { "value": "wav",  "label": "WAV",  "description": "Uncompressed, large files" },
+            { "value": "flac", "label": "FLAC", "description": "Lossless compressed" }
+          ]
+        },
+        {
+          "id": "bitrate",
+          "label": "Bitrate",
+          "description": "Audio quality in kbps (higher = better quality, larger file)",
+          "type": "dropdown",
+          "required": false,
+          "default": "192k",
+          "options": [
+            { "value": "128k", "label": "128 kbps", "description": "Good — streaming quality" },
+            { "value": "192k", "label": "192 kbps", "description": "High — recommended" },
+            { "value": "320k", "label": "320 kbps", "description": "Maximum — CD quality" }
+          ]
+        }
+      ],
+      "execute": {
+        "command": "ffmpeg -i /input/{input_file} -vn -ab {bitrate} -y /output/audio.{audio_format}",
+        "outputDir": "/output",
+        "outputPattern": "audio.*",
+        "successMessage": "Audio extracted successfully!",
+        "estimatedDuration": "~5 seconds per minute of video"
+      }
+    }
+  ]
+}

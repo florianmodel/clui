@@ -1,0 +1,127 @@
+{
+  "projectId": "imagemagick",
+  "projectName": "ImageMagick",
+  "description": "Powerful image processing — resize, convert, and transform images",
+  "version": "1.0.0",
+  "icon": "🖼️",
+  "dockerImage": "gui-bridge-imagemagick-test",
+  "dockerfilePath": "docker/imagemagick-test.Dockerfile",
+  "workflows": [
+    {
+      "id": "resize-image",
+      "name": "Resize Image",
+      "description": "Resize an image to specific dimensions",
+      "guidance": "Pick an image, set the target width and height, then run. Leave height blank to preserve the aspect ratio automatically.",
+      "steps": [
+        {
+          "id": "input_file",
+          "label": "Input Image",
+          "guidance": "Select the image file you want to resize",
+          "type": "file_input",
+          "required": true,
+          "accept": ".jpg,.jpeg,.png,.gif,.webp,.bmp,.tiff"
+        },
+        {
+          "id": "width",
+          "label": "Width (px)",
+          "description": "Target width in pixels",
+          "type": "number",
+          "required": true,
+          "min": 1,
+          "max": 16000,
+          "step": 1,
+          "placeholder": "e.g. 1920"
+        },
+        {
+          "id": "height",
+          "label": "Height (px)",
+          "description": "Target height in pixels. Leave blank to auto-calculate from width.",
+          "type": "number",
+          "required": false,
+          "min": 1,
+          "max": 16000,
+          "step": 1,
+          "placeholder": "auto"
+        },
+        {
+          "id": "keep_aspect",
+          "label": "Maintain Aspect Ratio",
+          "description": "Fit image within the given dimensions without stretching",
+          "type": "toggle",
+          "required": false,
+          "default": true
+        },
+        {
+          "id": "output_format",
+          "label": "Output Format",
+          "type": "dropdown",
+          "required": true,
+          "default": "png",
+          "options": [
+            { "value": "png",  "label": "PNG",  "description": "Lossless, supports transparency" },
+            { "value": "jpg",  "label": "JPEG", "description": "Smaller files, no transparency" },
+            { "value": "webp", "label": "WebP", "description": "Modern web format" }
+          ]
+        }
+      ],
+      "execute": {
+        "command": "convert /input/{input_file} -resize {width}x{height} /output/resized.{output_format}",
+        "outputDir": "/output",
+        "outputPattern": "resized.*",
+        "successMessage": "Image resized successfully!",
+        "estimatedDuration": "~1–2 seconds"
+      }
+    },
+    {
+      "id": "convert-format",
+      "name": "Convert Format",
+      "description": "Convert an image to a different file format",
+      "guidance": "Select your image and choose the target format. The converted file will be saved to the output folder.",
+      "steps": [
+        {
+          "id": "input_file",
+          "label": "Input Image",
+          "guidance": "Select the image file to convert",
+          "type": "file_input",
+          "required": true,
+          "accept": ".jpg,.jpeg,.png,.gif,.webp,.bmp,.tiff,.svg"
+        },
+        {
+          "id": "output_format",
+          "label": "Output Format",
+          "type": "radio",
+          "required": true,
+          "default": "png",
+          "options": [
+            { "value": "png",  "label": "PNG",  "description": "lossless + transparency" },
+            { "value": "jpg",  "label": "JPEG", "description": "small + no transparency" },
+            { "value": "webp", "label": "WebP", "description": "modern + best compression" },
+            { "value": "gif",  "label": "GIF",  "description": "animation-friendly" }
+          ]
+        },
+        {
+          "id": "quality",
+          "label": "Quality",
+          "description": "Compression quality 1–100 (for JPEG/WebP only)",
+          "type": "number",
+          "required": false,
+          "default": 90,
+          "min": 1,
+          "max": 100,
+          "step": 5,
+          "showIf": {
+            "stepId": "output_format",
+            "equals": "jpg"
+          }
+        }
+      ],
+      "execute": {
+        "command": "convert /input/{input_file} /output/converted.{output_format}",
+        "outputDir": "/output",
+        "outputPattern": "converted.*",
+        "successMessage": "Image converted successfully!",
+        "estimatedDuration": "~1 second"
+      }
+    }
+  ]
+}

@@ -32,15 +32,34 @@ clui/                              # repo root (also Electron app root — "main
 │   │   │   ├── preload.ts         # contextBridge API exposed to renderer
 │   │   │   ├── docker/
 │   │   │   │   └── DockerManager.ts   # dockerode wrapper
+│   │   │   ├── executor/
+│   │   │   │   └── ExecutorBridge.ts  # buildCommand + collectInputFiles (Chunk 2)
 │   │   │   └── ipc/
 │   │   │       └── handlers.ts    # ipcMain.handle registrations
 │   │   └── package.json
 │   ├── renderer/                  # React UI (Vite)
 │   │   ├── src/
-│   │   │   ├── App.tsx            # Two-panel layout
+│   │   │   ├── App.tsx            # Top bar + two-panel layout (schema picker)
 │   │   │   ├── electron.d.ts      # window.electronAPI types
 │   │   │   ├── components/
-│   │   │   │   ├── TestRunner.tsx # Docker health + Run button + output files
+│   │   │   │   ├── DynamicGUI/    # Generic schema-driven UI (Chunk 2)
+│   │   │   │   │   ├── DynamicGUI.tsx      # Top-level: header + workflow tabs
+│   │   │   │   │   ├── WorkflowSelector.tsx # Tab switcher
+│   │   │   │   │   ├── WorkflowPanel.tsx    # Form + run button + outputs
+│   │   │   │   │   ├── StepRenderer.tsx     # Maps step.type → input component
+│   │   │   │   │   ├── CommandPreview.tsx   # Expandable command preview
+│   │   │   │   │   ├── index.ts             # Barrel export
+│   │   │   │   │   └── inputs/
+│   │   │   │   │       ├── TextInput.tsx
+│   │   │   │   │       ├── NumberInput.tsx
+│   │   │   │   │       ├── Dropdown.tsx
+│   │   │   │   │       ├── RadioGroup.tsx
+│   │   │   │   │       ├── CheckboxInput.tsx
+│   │   │   │   │       ├── ToggleInput.tsx
+│   │   │   │   │       ├── FileInput.tsx
+│   │   │   │   │       ├── DirectoryInput.tsx
+│   │   │   │   │       └── TextareaInput.tsx
+│   │   │   │   ├── TestRunner.tsx # Chunk 1 test UI (kept for reference)
 │   │   │   │   └── LogPanel.tsx   # Scrollable log stream (stdout/stderr/system)
 │   │   │   └── hooks/
 │   │   │       └── useIPC.ts      # useLogEvents / useCompleteEvent hooks
@@ -53,9 +72,12 @@ clui/                              # repo root (also Electron app root — "main
 │       │   └── index.ts           # Barrel export
 │       └── package.json
 ├── docker/
-│   └── ffmpeg-test.Dockerfile     # ubuntu:24.04 + ffmpeg (Chunk 1 test image)
-└── schemas/                       # (future) Curated UI schemas
+│   ├── ffmpeg-test.Dockerfile     # ubuntu:24.04 + ffmpeg (Chunk 1 test image)
+│   └── imagemagick-test.Dockerfile # ubuntu:24.04 + imagemagick (Chunk 2 test image)
+└── schemas/
     └── examples/
+        ├── ffmpeg.json            # ffmpeg UI schema (2 workflows)
+        └── imagemagick.json       # imagemagick UI schema (2 workflows)
 ```
 
 ## Chunk Status
@@ -63,9 +85,9 @@ clui/                              # repo root (also Electron app root — "main
 | Chunk | Description | Status |
 |-------|-------------|--------|
 | 1 | Electron shell + Docker manager | **COMPLETE** |
-| 2 | UI schema spec + dynamic renderer | NOT STARTED |
-| 3 | Static CLI introspection (argparse/click/help) | NOT STARTED |
-| 4 | LLM-powered UI generation (Claude API) | NOT STARTED |
+| 2 | UI schema spec + dynamic renderer | **COMPLETE** |
+| 3 | Static CLI introspection (argparse/click/help) | **COMPLETE** |
+| 4 | LLM-powered UI generation (Claude API) | **COMPLETE** |
 | 5 | Project browser + auto-setup | NOT STARTED |
 | 6 | Polish, error handling, UX | NOT STARTED |
 | 7+ | Tool chaining / pipelines (future) | NOT STARTED |

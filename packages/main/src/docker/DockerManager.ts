@@ -3,9 +3,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
+export interface ExtraVolume {
+  hostPath: string;
+  containerPath: string;
+  readOnly?: boolean;
+}
+
 export interface RunOptions {
   inputDir?: string;   // host path → mounted read-only at /input
   outputDir?: string;  // host path → mounted read-write at /output
+  extraVolumes?: ExtraVolume[];  // additional volume mounts
   env?: Record<string, string>;
   timeout?: number;    // ms, default 5 minutes
 }
@@ -13,6 +20,10 @@ export interface RunOptions {
 export interface ExecutionResult {
   exitCode: number;
   outputFiles: string[];
+  /** Full stdout from the container (all chunks joined) */
+  stdout: string;
+  /** Full stderr from the container (all chunks joined) */
+  stderr: string;
   error?: string;
 }
 
@@ -20,10 +31,18 @@ export type LogCallback = (stream: 'stdout' | 'stderr' | 'system', line: string)
 
 export class DockerManager {
   private docker: Dockerode;
+  private activeContainer: Dockerode.Container | null = null;
 
   constructor() {
     // On macOS with Docker Desktop, the socket lives at the default path.
     this.docker = new Dockerode();
+  }
+
+  /** Stop the currently running container, if any. */
+  async cancelRunning(): Promise<void> {
+    if (this.activeContainer) {
+      await this.activeContainer.stop({ t: 0 }).catch(() => {});
+    }
   }
 
   // ── Health ─────────────────────────────────────────────────────────────
@@ -126,11 +145,15 @@ export class DockerManager {
     opts: RunOptions,
     onLog: LogCallback,
   ): Promise<ExecutionResult> {
-    const { inputDir, outputDir, env = {}, timeout = 5 * 60 * 1000 } = opts;
+    const { inputDir, outputDir, extraVolumes = [], env = {}, timeout = 5 * 60 * 1000 } = opts;
 
     const binds: string[] = [];
     if (inputDir) binds.push(`${inputDir}:/input:ro`);
     if (outputDir) binds.push(`${outputDir}:/output:rw`);
+    for (const vol of extraVolumes) {
+      const mode = vol.readOnly === false ? 'rw' : 'ro';
+      binds.push(`${vol.hostPath}:${vol.containerPath}:${mode}`);
+    }
 
     const envList = Object.entries(env).map(([k, v]) => `${k}=${v}`);
 
@@ -155,7 +178,7 @@ export class DockerManager {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       onLog('system', `Failed to create container: ${msg}`);
-      return { exitCode: -1, outputFiles: [], error: msg };
+      return { exitCode: -1, outputFiles: [], stdout: '', stderr: msg, error: msg };
     }
 
     // Attach log stream before starting
@@ -197,6 +220,7 @@ export class DockerManager {
       } as unknown as NodeJS.WritableStream,
     );
 
+    this.activeContainer = container;
     await container.start();
 
     // Set up timeout killer
@@ -206,8 +230,9 @@ export class DockerManager {
     }, timeout);
 
     // Wait for container to finish
-    const [statusResult] = await container.wait();
+    const statusResult = await container.wait();
     clearTimeout(killTimer);
+    this.activeContainer = null;
 
     const exitCode: number = (statusResult as { StatusCode: number }).StatusCode;
     onLog('system', `Container exited with code ${exitCode}.`);
@@ -224,7 +249,12 @@ export class DockerManager {
     // Remove container
     await container.remove({ force: true }).catch(() => {});
 
-    return { exitCode, outputFiles };
+    return {
+      exitCode,
+      outputFiles,
+      stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+      stderr: Buffer.concat(stderrChunks).toString('utf8'),
+    };
   }
 
   // ── Temp directory helpers ─────────────────────────────────────────────

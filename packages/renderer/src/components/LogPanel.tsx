@@ -31,7 +31,7 @@ export function LogPanel({ logs, onClear }: Props) {
       <div style={styles.body}>
         {logs.length === 0 && (
           <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>
-            No output yet. Click "Run FFmpeg Test" to start.
+            No output yet. Fill in the form and click Run to start.
           </span>
         )}
         {logs.map((entry, i) => (

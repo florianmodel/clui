@@ -10,29 +10,68 @@ import {
   type ExecCompleteEvent,
   type FilePickRequest,
   type FilePickResponse,
+  type FileSavePickRequest,
+  type FileSavePickResponse,
+  type FileCopyRequest,
+  type SchemaLoadRequest,
+  type SchemaLoadResponse,
+  type ExecSchemaRunRequest,
+  type AnalyzerRunRequest,
+  type AnalyzerRunResponse,
+  type SchemaGenerateRequest,
+  type SchemaGenerateResponse,
+  type ConfigGetResponse,
+  type ConfigSetRequest,
+  type ValidateKeyRequest,
+  type ValidateKeyResponse,
+  type AnalysisProgressEvent,
 } from '@gui-bridge/shared';
 
 // Type-safe API exposed to the renderer via contextBridge.
 // contextIsolation: true — renderer cannot access Node APIs directly.
 export interface ElectronAPI {
+  app: {
+    getDesktopPath: () => Promise<string>;
+  };
   docker: {
     checkHealth: () => Promise<DockerHealthResponse>;
     buildImage: (req: DockerBuildRequest) => Promise<DockerBuildResponse>;
   };
   exec: {
     run: (req: ExecRunRequest) => Promise<ExecRunResponse>;
+    schemaRun: (req: ExecSchemaRunRequest) => Promise<ExecRunResponse>;
+    cancel: () => Promise<void>;
+  };
+  schema: {
+    load: (req: SchemaLoadRequest) => Promise<SchemaLoadResponse>;
+    generate: (req: SchemaGenerateRequest) => Promise<SchemaGenerateResponse>;
+  };
+  analyzer: {
+    run: (req: AnalyzerRunRequest) => Promise<AnalyzerRunResponse>;
+  };
+  config: {
+    get: () => Promise<ConfigGetResponse>;
+    set: (req: ConfigSetRequest) => Promise<void>;
+    validateKey: (req: ValidateKeyRequest) => Promise<ValidateKeyResponse>;
   };
   files: {
     pick: (req: FilePickRequest) => Promise<FilePickResponse>;
+    savePick: (req: FileSavePickRequest) => Promise<FileSavePickResponse>;
+    copy: (req: FileCopyRequest) => Promise<void>;
     showInFinder: (filePath: string) => Promise<void>;
   };
   on: {
     log: (callback: (event: ExecLogEvent) => void) => () => void;
     complete: (callback: (event: ExecCompleteEvent) => void) => () => void;
+    analysisProgress: (callback: (event: AnalysisProgressEvent) => void) => () => void;
   };
 }
 
 const api: ElectronAPI = {
+  app: {
+    getDesktopPath: () => ipcRenderer.invoke(IPCChannel.APP_GET_PATH, 'desktop'),
+  },
+
   docker: {
     checkHealth: () =>
       ipcRenderer.invoke(IPCChannel.DOCKER_HEALTH),
@@ -44,11 +83,40 @@ const api: ElectronAPI = {
   exec: {
     run: (req: ExecRunRequest) =>
       ipcRenderer.invoke(IPCChannel.EXEC_RUN, req),
+    schemaRun: (req: ExecSchemaRunRequest) =>
+      ipcRenderer.invoke(IPCChannel.EXEC_SCHEMA_RUN, req),
+    cancel: () =>
+      ipcRenderer.invoke(IPCChannel.EXEC_CANCEL),
+  },
+
+  schema: {
+    load: (req: SchemaLoadRequest) =>
+      ipcRenderer.invoke(IPCChannel.SCHEMA_LOAD, req),
+    generate: (req: SchemaGenerateRequest) =>
+      ipcRenderer.invoke(IPCChannel.SCHEMA_GENERATE, req),
+  },
+
+  analyzer: {
+    run: (req: AnalyzerRunRequest) =>
+      ipcRenderer.invoke(IPCChannel.ANALYZER_RUN, req),
+  },
+
+  config: {
+    get: () => ipcRenderer.invoke(IPCChannel.CONFIG_GET),
+    set: (req: ConfigSetRequest) => ipcRenderer.invoke(IPCChannel.CONFIG_SET, req),
+    validateKey: (req: ValidateKeyRequest) =>
+      ipcRenderer.invoke(IPCChannel.CONFIG_VALIDATE_KEY, req),
   },
 
   files: {
     pick: (req: FilePickRequest) =>
       ipcRenderer.invoke(IPCChannel.FILE_PICK, req),
+
+    savePick: (req: FileSavePickRequest) =>
+      ipcRenderer.invoke(IPCChannel.FILE_SAVE_PICK, req),
+
+    copy: (req: FileCopyRequest) =>
+      ipcRenderer.invoke(IPCChannel.FILE_COPY, req),
 
     showInFinder: (filePath: string) =>
       ipcRenderer.invoke(IPCChannel.FILE_SHOW_IN_FINDER, filePath),
@@ -66,6 +134,12 @@ const api: ElectronAPI = {
       const listener = (_: Electron.IpcRendererEvent, event: ExecCompleteEvent) => callback(event);
       ipcRenderer.on(IPCChannel.EXEC_COMPLETE, listener);
       return () => ipcRenderer.removeListener(IPCChannel.EXEC_COMPLETE, listener);
+    },
+
+    analysisProgress: (callback: (event: AnalysisProgressEvent) => void) => {
+      const listener = (_: Electron.IpcRendererEvent, event: AnalysisProgressEvent) => callback(event);
+      ipcRenderer.on(IPCChannel.ANALYSIS_PROGRESS, listener);
+      return () => ipcRenderer.removeListener(IPCChannel.ANALYSIS_PROGRESS, listener);
     },
   },
 };
