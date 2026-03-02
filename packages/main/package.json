@@ -6,16 +6,20 @@
   "scripts": {
     "dev": "tsc -p tsconfig.json --watch & electron dist/index.js",
     "build": "tsc -p tsconfig.json",
-    "start": "electron dist/index.js"
+    "start": "electron dist/index.js",
+    "test": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
     "@gui-bridge/shared": "*",
     "dockerode": "^4.0.4"
   },
   "devDependencies": {
     "@types/dockerode": "^3.3.33",
     "@types/node": "^22.13.5",
+    "@vitest/coverage-v8": "^2.1.8",
     "electron": "^34.2.0",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
   }
 }
