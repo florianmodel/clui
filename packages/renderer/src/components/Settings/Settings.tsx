@@ -2,9 +2,11 @@ import { useState, useEffect } from 'react';
 
 interface Props {
   onClose?: () => void;
+  theme?: 'dark' | 'light';
+  onToggleTheme?: () => void;
 }
 
-export function Settings({ onClose }: Props) {
+export function Settings({ onClose, theme = 'dark', onToggleTheme }: Props) {
   const [apiKey, setApiKey] = useState('');
   const [maskedKey, setMaskedKey] = useState('');
   const [editingKey, setEditingKey] = useState(false);
@@ -152,6 +154,32 @@ export function Settings({ onClose }: Props) {
           {dockerVersion}
         </div>
       </section>
+
+      {/* Appearance */}
+      {onToggleTheme && (
+        <section style={styles.section}>
+          <div style={styles.sectionTitle}>Appearance</div>
+          <div style={styles.themeRow}>
+            <span style={styles.sectionDesc}>Color scheme</span>
+            <div style={styles.themeToggle}>
+              <button
+                type="button"
+                style={{ ...styles.themeBtn, ...(theme === 'dark' ? styles.themeBtnActive : {}) }}
+                onClick={() => theme !== 'dark' && onToggleTheme()}
+              >
+                Dark
+              </button>
+              <button
+                type="button"
+                style={{ ...styles.themeBtn, ...(theme === 'light' ? styles.themeBtnActive : {}) }}
+                onClick={() => theme !== 'light' && onToggleTheme()}
+              >
+                Light
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
     </div>
   );
 }
@@ -197,8 +225,21 @@ const styles: Record<string, React.CSSProperties> = {
   },
   saveKeyBtn: {
     border: 'none', borderRadius: 6,
-    background: 'var(--accent)', color: '#0f0c29',
+    background: 'var(--accent)', color: 'var(--bg)',
     fontWeight: 700, fontSize: 12, padding: '5px 14px', cursor: 'pointer',
+  },
+  themeRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
+  themeToggle: {
+    display: 'flex', borderRadius: 8,
+    border: '1px solid var(--border)', overflow: 'hidden',
+  },
+  themeBtn: {
+    border: 'none', background: 'transparent',
+    color: 'var(--text-muted)', fontSize: 12,
+    padding: '5px 14px', cursor: 'pointer',
+  },
+  themeBtnActive: {
+    background: 'var(--surface-2)', color: 'var(--text)', fontWeight: 600,
   },
   cancelBtn: {
     border: 'none', background: 'transparent',

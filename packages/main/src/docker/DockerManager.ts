@@ -185,7 +185,7 @@ export class DockerManager {
           NetworkMode: network,
           Memory: 2 * 1024 * 1024 * 1024,  // 2 GB
           NanoCpus: 2 * 1e9,               // 2 CPUs
-          AutoRemove: false,
+          AutoRemove: true,
         },
         AttachStdout: true,
         AttachStderr: true,

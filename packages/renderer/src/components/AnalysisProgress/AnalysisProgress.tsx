@@ -116,7 +116,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11, fontWeight: 700, flexShrink: 0,
   },
   dotDone: { background: '#22c55e', color: '#fff' },
-  dotActive: { background: 'var(--accent)', color: '#0f0c29', animation: 'pulse 1s ease-in-out infinite' },
+  dotActive: { background: 'var(--accent)', color: 'var(--bg)', animation: 'pulse 1s ease-in-out infinite' },
   dotPending: { background: 'var(--surface-2)', color: 'var(--text-muted)', border: '1px solid var(--border)' },
   stageInfo: { display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 1 },
   stageLabel: { fontSize: 13, color: 'var(--text)' },

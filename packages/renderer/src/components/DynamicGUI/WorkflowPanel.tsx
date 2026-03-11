@@ -511,7 +511,7 @@ const styles: Record<string, React.CSSProperties> = {
   actions: { display: 'flex', gap: 10 },
   runBtn: {
     flex: 1, border: 'none', borderRadius: 10,
-    color: '#0f0c29', fontWeight: 700, fontSize: 15,
+    color: 'var(--bg)', fontWeight: 700, fontSize: 15,
     padding: '12px 24px', cursor: 'pointer', letterSpacing: '-0.01em',
   },
   stopBtn: {
@@ -520,20 +520,20 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700, fontSize: 14, padding: '12px 20px', cursor: 'pointer',
   },
   autofixBtn: {
-    border: '1px solid rgba(167, 139, 250, 0.4)',
-    borderRadius: 10, background: 'rgba(167, 139, 250, 0.08)',
-    color: '#a78bfa', fontWeight: 600, fontSize: 14,
+    border: '1px solid var(--border)',
+    borderRadius: 10, background: 'var(--surface-2)',
+    color: 'var(--text)', fontWeight: 600, fontSize: 14,
     padding: '10px 20px', cursor: 'pointer', textAlign: 'center',
   },
   // Fix card
   fixCard: {
     display: 'flex', flexDirection: 'column', gap: 12,
     padding: '14px 16px',
-    background: 'rgba(167, 139, 250, 0.06)',
-    border: '1px solid rgba(167, 139, 250, 0.3)',
+    background: 'var(--surface-2)',
+    border: '1px solid var(--border)',
     borderRadius: 10,
   },
-  fixTitle: { fontSize: 13, fontWeight: 700, color: '#a78bfa' },
+  fixTitle: { fontSize: 13, fontWeight: 700, color: 'var(--text)' },
   fixExplanation: { fontSize: 13, color: 'var(--text)', fontStyle: 'italic' },
   fixDiff: { display: 'flex', flexDirection: 'column', gap: 8 },
   fixDiffRow: { display: 'flex', alignItems: 'baseline', gap: 10 },
@@ -549,7 +549,7 @@ const styles: Record<string, React.CSSProperties> = {
   fixActions: { display: 'flex', gap: 8 },
   acceptBtn: {
     border: 'none', borderRadius: 8,
-    background: '#a78bfa', color: '#0f0c29',
+    background: 'var(--accent)', color: 'var(--bg)',
     fontWeight: 700, fontSize: 13, padding: '8px 16px', cursor: 'pointer',
   },
   dismissBtn: {
@@ -569,7 +569,7 @@ const styles: Record<string, React.CSSProperties> = {
   savePromptActions: { display: 'flex', gap: 8, flexShrink: 0 },
   saveBtn: {
     border: 'none', borderRadius: 8,
-    background: 'var(--green)', color: '#0f0c29',
+    background: 'var(--green)', color: '#fff',
     fontWeight: 700, fontSize: 13, padding: '6px 14px', cursor: 'pointer',
   },
   estimate: {

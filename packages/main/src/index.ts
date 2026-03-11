@@ -27,8 +27,8 @@ function createWindow(): void {
     y: savedWindow?.y,
     minWidth: 900,
     minHeight: 640,
-    title: 'GUI Bridge',
-    backgroundColor: '#0f0c29',
+    title: 'CLUI',
+    backgroundColor: '#111213',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

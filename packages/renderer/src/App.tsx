@@ -68,7 +68,22 @@ export function App() {
   // ── Onboarding + connectivity ─────────────────────────────────────────
   const [onboardingDone, setOnboardingDone] = useState<boolean | null>(null);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
-  const [showLogs, setShowLogs] = useState(true);
+  const [showLogs, setShowLogs] = useState(false);
+
+  // ── Theme ─────────────────────────────────────────────────────────────
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    return (localStorage.getItem('clui-theme') as 'dark' | 'light') ?? 'dark';
+  });
+
+  // ── Apply theme ───────────────────────────────────────────────────────
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('clui-theme', theme);
+  }, [theme]);
+
+  function toggleTheme() {
+    setTheme((t) => (t === 'dark' ? 'light' : 'dark'));
+  }
 
   // ── Log handlers ──────────────────────────────────────────────────────
   const handleLog = useCallback((event: ExecLogEvent) => {
@@ -364,7 +379,7 @@ export function App() {
         return renderAnalyzeView();
 
       case 'settings':
-        return <Settings />;
+        return <Settings theme={theme} onToggleTheme={toggleTheme} />;
 
       default:
         return null;
@@ -458,21 +473,22 @@ export function App() {
 
       {/* Top bar */}
       <div style={styles.topBar}>
-        <span style={styles.appName}>GUI Bridge</span>
+        <span style={styles.appName}>CLUI</span>
         <StatusDot state={dockerStatus} />
-        <span style={styles.dockerLabel}>
-          {dockerStatus === 'checking' && 'Checking Docker…'}
-          {dockerStatus === 'ok' && 'Docker ready'}
-          {dockerStatus === 'error' && 'Docker not running'}
-        </span>
+        {dockerStatus !== 'ok' && (
+          <span style={styles.dockerLabel}>
+            {dockerStatus === 'checking' && 'Checking Docker…'}
+            {dockerStatus === 'error' && 'Docker not running'}
+          </span>
+        )}
         <div style={{ flex: 1 }} />
         <button
           type="button"
           style={{ ...styles.topBarBtn, ...(showLogs ? styles.topBarBtnActive : {}) }}
           onClick={() => setShowLogs((v) => !v)}
-          title="Toggle Output Panel (⌘L)"
+          title="Toggle Console (⌘L)"
         >
-          Output
+          Console
         </button>
       </div>
 
@@ -513,8 +529,9 @@ export function App() {
 
 function StatusDot({ state }: { state: DockerStatus }) {
   const color = state === 'ok' ? 'var(--green)' : state === 'error' ? 'var(--red)' : 'var(--yellow)';
+  const label = state === 'ok' ? 'Docker ready' : state === 'error' ? 'Docker not running' : 'Checking Docker…';
   return (
-    <div style={{ width: 7, height: 7, borderRadius: '50%', background: color, boxShadow: `0 0 5px ${color}`, flexShrink: 0 }} />
+    <div title={label} style={{ width: 7, height: 7, borderRadius: '50%', background: color, boxShadow: `0 0 5px ${color}`, flexShrink: 0 }} />
   );
 }
 
@@ -527,8 +544,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   appName: {
     fontSize: 13, fontWeight: 800, letterSpacing: '-0.02em',
-    background: 'linear-gradient(90deg, #a78bfa, #60a5fa)',
-    WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
+    color: 'var(--text)',
     marginRight: 4,
   },
   dockerLabel: { fontSize: 11, color: 'var(--text-muted)' },
@@ -538,8 +554,8 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '2px 8px', cursor: 'pointer',
   },
   topBarBtnActive: {
-    borderColor: 'rgba(167,139,250,0.5)', color: '#a78bfa',
-    background: 'rgba(167,139,250,0.08)',
+    borderColor: 'var(--border)', color: 'var(--text)',
+    background: 'var(--surface-2)',
   },
   offlineBanner: {
     background: 'rgba(251,191,36,0.12)', borderBottom: '1px solid rgba(251,191,36,0.3)',
@@ -552,14 +568,14 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex', flexDirection: 'column', gap: 16,
   },
   logPanel: {
-    width: 380, flexShrink: 0,
+    width: 260, flexShrink: 0,
     display: 'flex', flexDirection: 'column',
     borderLeft: '1px solid var(--border)',
   },
   mainContent: { display: 'flex', flexDirection: 'column', gap: 16 },
   openProjectBtn: {
     border: 'none', borderRadius: 10,
-    background: 'var(--green)', color: '#0f0c29',
+    background: 'var(--green)', color: '#fff',
     fontWeight: 700, fontSize: 15, padding: '12px 24px', cursor: 'pointer',
     alignSelf: 'flex-start',
   },

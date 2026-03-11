@@ -109,6 +109,8 @@ function simplifyExecutionError(
   }
 
   // Python / filesystem errors (order matters — check specific before general)
+  if ((stderr.includes('IsADirectoryError') || stderr.includes('[Errno 21] Is a directory')) && stderr.includes('/output/'))
+    return { message: 'Command wrote to the output folder instead of a file', suggestion: "Use the Auto-fix button — the output path needs a filename like '/output/merged.pdf'." };
   if (stderr.includes('IsADirectoryError') || stderr.includes('[Errno 21] Is a directory'))
     return { message: 'Command tried to open a folder as a file', suggestion: 'Regenerate the UI from the sidebar menu to fix the command template.' };
   if (stderr.includes('NotADirectoryError') || stderr.includes('[Errno 20] Not a directory'))

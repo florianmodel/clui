@@ -77,9 +77,9 @@ const styles: Record<string, React.CSSProperties> = {
   fullName: { fontSize: 14, fontWeight: 700, color: 'var(--text)' },
   langBadge: {
     fontSize: 11, padding: '2px 8px',
-    background: 'rgba(96, 165, 250, 0.12)',
-    border: '1px solid rgba(96, 165, 250, 0.25)',
-    borderRadius: 20, color: '#60a5fa',
+    background: 'var(--surface-2)',
+    border: '1px solid rgba(255,255,255,0.15)',
+    borderRadius: 20, color: 'var(--text)',
   },
   stars: { display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 },
   starIcon: { fontSize: 12 },
@@ -89,7 +89,7 @@ const styles: Record<string, React.CSSProperties> = {
   updated: { fontSize: 11, color: 'var(--text-muted)' },
   installBtn: {
     border: 'none', borderRadius: 8,
-    background: 'var(--accent)', color: '#0f0c29',
+    background: 'var(--accent)', color: 'var(--bg)',
     fontWeight: 700, fontSize: 13, padding: '6px 16px', cursor: 'pointer',
   },
   installedBadge: {

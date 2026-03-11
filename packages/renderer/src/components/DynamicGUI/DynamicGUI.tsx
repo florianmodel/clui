@@ -4,6 +4,7 @@ import { WorkflowSelector } from './WorkflowSelector.js';
 import { WorkflowPanel } from './WorkflowPanel.js';
 
 type ImproveStatus = 'idle' | 'open' | 'thinking' | 'error';
+type AddWorkflowStatus = 'idle' | 'open' | 'thinking' | 'error' | 'infeasible';
 
 interface Props {
   schema: UISchema;
@@ -24,8 +25,40 @@ export function DynamicGUI({ schema, onLog, onClearLogs, dockerStatus, projectId
   const [improveFeedback, setImproveFeedback] = useState('');
   const [improveError, setImproveError] = useState('');
 
+  // New Use Case panel state
+  const [addStatus, setAddStatus] = useState<AddWorkflowStatus>('idle');
+  const [addInput, setAddInput] = useState('');
+  const [addMessage, setAddMessage] = useState('');
+
   const activeWorkflow =
     schema.workflows.find((w) => w.id === activeWorkflowId) ?? schema.workflows[0];
+
+  async function handleAddWorkflow() {
+    if (!addInput.trim() || !projectId) return;
+    setAddStatus('thinking');
+    setAddMessage('');
+
+    const res = await window.electronAPI.projects.addWorkflow({
+      projectId,
+      description: addInput.trim(),
+      currentSchema: schema,
+    });
+
+    if (res.infeasible) {
+      setAddStatus('infeasible');
+      setAddMessage(res.infeasible);
+    } else if (res.ok && res.schema) {
+      setAddStatus('idle');
+      setAddInput('');
+      onSchemaImproved?.(res.schema);
+      // Switch to the newly added workflow tab
+      const newWf = res.schema.workflows[res.schema.workflows.length - 1];
+      if (newWf) setActiveWorkflowId(newWf.id);
+    } else {
+      setAddStatus('error');
+      setAddMessage(res.error ?? 'Failed to generate workflow.');
+    }
+  }
 
   async function handleImprove() {
     if (!improveFeedback.trim() || !projectId) return;
@@ -59,30 +92,58 @@ export function DynamicGUI({ schema, onLog, onClearLogs, dockerStatus, projectId
             <p style={styles.subtitle}>{schema.description}</p>
           </div>
 
-          {/* Improve button — only shown for installed projects */}
+          {/* Buttons — only shown for installed projects */}
           {projectId && onSchemaImproved && (
-            <button
-              type="button"
-              style={{
-                ...styles.improveBtn,
-                ...(improveStatus === 'open' || improveStatus === 'thinking' || improveStatus === 'error'
-                  ? styles.improveBtnActive
-                  : {}),
-              }}
-              onClick={() => {
-                if (improveStatus === 'idle') {
-                  setImproveStatus('open');
-                  setImproveError('');
-                } else if (improveStatus !== 'thinking') {
-                  setImproveStatus('idle');
-                  setImproveFeedback('');
-                  setImproveError('');
-                }
-              }}
-              disabled={improveStatus === 'thinking'}
-            >
-              ✨ Improve
-            </button>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              {/* New Use Case */}
+              <button
+                type="button"
+                style={{
+                  ...styles.improveBtn,
+                  ...(addStatus !== 'idle' ? styles.improveBtnActive : {}),
+                }}
+                onClick={() => {
+                  if (addStatus === 'idle') {
+                    setAddStatus('open');
+                    setAddMessage('');
+                    setImproveStatus('idle');
+                  } else if (addStatus !== 'thinking') {
+                    setAddStatus('idle');
+                    setAddInput('');
+                    setAddMessage('');
+                  }
+                }}
+                disabled={addStatus === 'thinking'}
+                title="Add a new workflow tab with AI"
+              >
+                + New Use Case
+              </button>
+
+              {/* Improve */}
+              <button
+                type="button"
+                style={{
+                  ...styles.improveBtn,
+                  ...(improveStatus === 'open' || improveStatus === 'thinking' || improveStatus === 'error'
+                    ? styles.improveBtnActive
+                    : {}),
+                }}
+                onClick={() => {
+                  if (improveStatus === 'idle') {
+                    setImproveStatus('open');
+                    setImproveError('');
+                    setAddStatus('idle');
+                  } else if (improveStatus !== 'thinking') {
+                    setImproveStatus('idle');
+                    setImproveFeedback('');
+                    setImproveError('');
+                  }
+                }}
+                disabled={improveStatus === 'thinking'}
+              >
+                ✨ Improve
+              </button>
+            </div>
           )}
         </div>
 
@@ -96,6 +157,54 @@ export function DynamicGUI({ schema, onLog, onClearLogs, dockerStatus, projectId
           </span>
         </div>
       </div>
+
+      {/* New Use Case panel */}
+      {addStatus !== 'idle' && (
+        <div style={styles.improvePanel}>
+          <div style={styles.improvePanelTitle}>New Use Case</div>
+          <div style={styles.improvePanelHint}>
+            Describe what you want this tool to do and AI will check feasibility and generate a new workflow tab.
+          </div>
+          <textarea
+            style={styles.improveTextarea}
+            value={addInput}
+            onChange={(e) => setAddInput(e.target.value)}
+            placeholder="e.g. Extract text from a PDF, resize images in bulk…"
+            rows={3}
+            disabled={addStatus === 'thinking'}
+            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleAddWorkflow();
+            }}
+          />
+          {addStatus === 'infeasible' && (
+            <div style={{ ...styles.improveError, color: 'var(--yellow)' }}>
+              Not feasible: {addMessage}
+            </div>
+          )}
+          {addStatus === 'error' && (
+            <div style={styles.improveError}>{addMessage}</div>
+          )}
+          <div style={styles.improveActions}>
+            <button
+              type="button"
+              style={styles.improveSubmitBtn}
+              onClick={handleAddWorkflow}
+              disabled={addStatus === 'thinking' || !addInput.trim()}
+            >
+              {addStatus === 'thinking' ? 'Checking feasibility…' : 'Generate Workflow'}
+            </button>
+            <button
+              type="button"
+              style={styles.improveCancelBtn}
+              onClick={() => { setAddStatus('idle'); setAddInput(''); setAddMessage(''); }}
+              disabled={addStatus === 'thinking'}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Improve panel */}
       {(improveStatus === 'open' || improveStatus === 'thinking' || improveStatus === 'error') && (
@@ -187,8 +296,7 @@ const styles: Record<string, React.CSSProperties> = {
   icon: { fontSize: 28, lineHeight: 1 },
   title: {
     fontSize: 20, fontWeight: 700, margin: 0,
-    background: 'linear-gradient(90deg, #a78bfa, #60a5fa)',
-    WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
+    color: 'var(--text)',
   },
   subtitle: { fontSize: 12, color: 'var(--text-muted)', margin: 0 },
   statusRow: {
@@ -236,7 +344,7 @@ const styles: Record<string, React.CSSProperties> = {
   improveActions: { display: 'flex', gap: 8, alignItems: 'center' },
   improveSubmitBtn: {
     border: 'none', borderRadius: 8,
-    background: 'var(--accent)', color: '#0f0c29',
+    background: 'var(--accent)', color: 'var(--bg)',
     fontWeight: 700, fontSize: 12, padding: '6px 14px', cursor: 'pointer',
   },
   improveCancelBtn: {

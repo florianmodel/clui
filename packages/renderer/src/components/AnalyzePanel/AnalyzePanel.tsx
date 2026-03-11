@@ -112,7 +112,7 @@ const styles: Record<string, React.CSSProperties> = {
   analyzeBtn: {
     background: 'var(--accent)', border: 'none',
     borderRadius: 8, padding: '10px 20px',
-    fontSize: 13, fontWeight: 600, color: '#0f0c29', cursor: 'pointer',
+    fontSize: 13, fontWeight: 600, color: 'var(--bg)', cursor: 'pointer',
     alignSelf: 'flex-start',
   },
   analyzeBtnDisabled: {

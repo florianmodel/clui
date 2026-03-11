@@ -174,7 +174,7 @@ const styles: Record<string, React.CSSProperties> = {
   approveBtn: {
     background: 'var(--accent)', border: 'none',
     borderRadius: 8, padding: '10px 20px',
-    fontSize: 13, fontWeight: 600, color: '#0f0c29', cursor: 'pointer',
+    fontSize: 13, fontWeight: 600, color: 'var(--bg)', cursor: 'pointer',
   },
   errorBox: {
     background: 'rgba(239,68,68,0.1)', border: '1px solid var(--red)',

@@ -265,7 +265,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   primaryBtn: {
     border: 'none', borderRadius: 10,
-    background: 'var(--accent)', color: '#0f0c29',
+    background: 'var(--accent)', color: 'var(--bg)',
     fontWeight: 700, fontSize: 14, padding: '11px 24px',
     cursor: 'pointer', alignSelf: 'flex-end',
   },

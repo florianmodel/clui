@@ -42,6 +42,10 @@ import type {
   ProjectGenerateUiResponse,
   ProjectImproveRequest,
   ProjectImproveResponse,
+  WorkflowAddRequest,
+  WorkflowAddResponse,
+  GithubRecommendRequest,
+  GithubRecommendResponse,
   FileGetInfoRequest,
   FileGetInfoResponse,
   AppConfirmRequest,
@@ -95,6 +99,7 @@ declare global {
       };
       github: {
         search: (req: GithubSearchRequest) => Promise<GithubSearchResponse>;
+        recommend: (req: GithubRecommendRequest) => Promise<GithubRecommendResponse>;
       };
       projects: {
         install: (req: ProjectInstallRequest) => Promise<ProjectInstallResponse>;
@@ -104,6 +109,7 @@ declare global {
         openFolder: (projectId: string) => Promise<void>;
         generateUi: (req: ProjectGenerateUiRequest) => Promise<ProjectGenerateUiResponse>;
         improve: (req: ProjectImproveRequest) => Promise<ProjectImproveResponse>;
+        addWorkflow: (req: WorkflowAddRequest) => Promise<WorkflowAddResponse>;
       };
       on: {
         log: (callback: (event: ExecLogEvent) => void) => () => void;

@@ -276,8 +276,7 @@ const styles: Record<string, React.CSSProperties> = {
   header: { display: 'flex', flexDirection: 'column', gap: 4 },
   title: {
     fontSize: 22, fontWeight: 700,
-    background: 'linear-gradient(90deg, #a78bfa, #60a5fa)',
-    WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
+    color: 'var(--text)',
   },
   subtitle: { fontSize: 12, color: 'var(--text-muted)' },
   statusRow: {
@@ -302,7 +301,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 8, color: 'var(--text)', fontSize: 13, padding: '8px 16px',
   },
   runBtn: {
-    border: 'none', borderRadius: 10, color: '#0f0c29',
+    border: 'none', borderRadius: 10, color: 'var(--bg)',
     fontWeight: 700, fontSize: 15, padding: '12px 24px', letterSpacing: '-0.01em',
   },
   stopBtn: {

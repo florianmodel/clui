@@ -157,7 +157,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   progressBar: {
     position: 'absolute', left: 0, top: 0, bottom: 0,
-    background: 'linear-gradient(90deg, #a78bfa55, #60a5fa55)',
+    background: 'var(--accent-dim)',
     transition: 'width 0.3s ease',
   },
   progressLabel: {
@@ -165,9 +165,9 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600, paddingLeft: 8,
   },
   body: {
-    flex: 1, overflowY: 'auto', padding: '10px 14px',
-    fontFamily: 'var(--font-mono)', fontSize: 12,
-    lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+    flex: 1, overflowY: 'auto', padding: '8px 10px',
+    fontFamily: 'var(--font-mono)', fontSize: 11,
+    lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-all',
   },
   empty: { color: 'var(--text-muted)', fontStyle: 'italic', fontSize: 12 },
   prefix: { color: 'var(--text-muted)', userSelect: 'none' },

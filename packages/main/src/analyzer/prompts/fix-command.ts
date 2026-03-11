@@ -40,7 +40,12 @@ Rules:
 - For MULTIPLE FILES steps: iterate /input/ directly — do NOT use /input/{step_id} as a path.
   WRONG: [process('/input/') for f in os.listdir('/input')]  <- /input/ is a directory, not a file
   RIGHT: [process('/input/' + f) for f in sorted(os.listdir('/input')) if f.lower().endswith('.pdf')]
-  RIGHT: for f in /input/*.pdf; do tool "$f" -o /output/; done
+  RIGHT: for f in /input/*.pdf; do tool "$f" -o /output/out.ext; done
+- Output must be a FULL FILE PATH — never the bare directory '/output/':
+  WRONG: m.write('/output/')         <- IsADirectoryError: /output/ is a directory, not a file
+  WRONG: open('/output/', 'wb')      <- same
+  RIGHT: m.write('/output/merged.pdf')
+  RIGHT: writer.write('/output/result.pdf')
 - In bash: quote path variables ("$f" not $f) to handle filenames with spaces
 - Keep the tool binary name unchanged
 - explanation must be ≤15 words

@@ -44,6 +44,10 @@ import {
   type ProjectGenerateUiResponse,
   type ProjectImproveRequest,
   type ProjectImproveResponse,
+  type WorkflowAddRequest,
+  type WorkflowAddResponse,
+  type GithubRecommendRequest,
+  type GithubRecommendResponse,
   type FileGetInfoRequest,
   type FileGetInfoResponse,
   type FileInfo,
@@ -60,6 +64,8 @@ import { LLMClient, MockLLMClient } from '../analyzer/LLMClient.js';
 import { SchemaCache } from '../analyzer/SchemaCache.js';
 import { ConfigManager } from '../config/ConfigManager.js';
 import { buildFixCommandPrompt } from '../analyzer/prompts/fix-command.js';
+import { buildAddWorkflowPrompt } from '../analyzer/prompts/add-workflow.js';
+import { buildRepoRecommendationPrompt } from '../analyzer/prompts/recommend-repos.js';
 import { GitHubClient } from '../github/GitHubClient.js';
 import { ProjectManager } from '../projects/ProjectManager.js';
 
@@ -728,6 +734,90 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
         const schema = await projectManager.generateSchema(req.projectId, llmClient, sendProgress);
         return { ok: true, schema };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, error: msg };
+      }
+    },
+  );
+
+  // ── workflow:add ────────────────────────────────────────────────────────
+  // LLM checks feasibility and generates a new Workflow for an installed project.
+  ipcMain.handle(
+    IPCChannel.WORKFLOW_ADD,
+    async (_event, req: WorkflowAddRequest): Promise<WorkflowAddResponse> => {
+      const config = configManager.getConfig();
+
+      if (!config.anthropicApiKey && !config.mockMode) {
+        return { ok: false, error: 'No API key configured. Add one in Settings.' };
+      }
+
+      try {
+        const useMock = config.mockMode === true;
+        const llmClient = useMock
+          ? new MockLLMClient()
+          : new LLMClient(config.anthropicApiKey!);
+
+        if (!('rawComplete' in llmClient)) {
+          return { ok: false, error: 'Mock mode does not support workflow generation.' };
+        }
+        const raw = await (llmClient as LLMClient).rawComplete(buildAddWorkflowPrompt(req.description, req.currentSchema));
+        const parsed = JSON.parse(raw.trim());
+
+        if (parsed.feasible === false) {
+          return { ok: true, infeasible: parsed.reason ?? 'Not feasible for this tool.' };
+        }
+
+        if (!parsed.feasible || !parsed.workflow) {
+          return { ok: false, error: 'Unexpected response from AI.' };
+        }
+
+        const updatedSchema = {
+          ...req.currentSchema,
+          workflows: [...req.currentSchema.workflows, parsed.workflow],
+        };
+
+        // Persist updated schema
+        const schemaPath = path.join(os.homedir(), '.gui-bridge', 'projects', req.projectId, 'schema.json');
+        fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
+        fs.writeFileSync(schemaPath, JSON.stringify(updatedSchema, null, 2), 'utf8');
+
+        return { ok: true, schema: updatedSchema };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, error: msg };
+      }
+    },
+  );
+
+  // ── github:recommend ────────────────────────────────────────────────────
+  // LLM suggests GitHub repos matching a natural-language description.
+  ipcMain.handle(
+    IPCChannel.GITHUB_RECOMMEND,
+    async (_event, req: GithubRecommendRequest): Promise<GithubRecommendResponse> => {
+      const config = configManager.getConfig();
+
+      if (!config.anthropicApiKey && !config.mockMode) {
+        return { ok: false, error: 'No API key configured. Add one in Settings.' };
+      }
+
+      try {
+        const useMock = config.mockMode === true;
+        const llmClient = useMock
+          ? new MockLLMClient()
+          : new LLMClient(config.anthropicApiKey!);
+
+        if (!('rawComplete' in llmClient)) {
+          return { ok: false, error: 'Mock mode does not support AI recommendations.' };
+        }
+        const raw = await (llmClient as LLMClient).rawComplete(buildRepoRecommendationPrompt(req.description));
+        const parsed = JSON.parse(raw.trim());
+
+        if (!Array.isArray(parsed)) {
+          return { ok: false, error: 'Unexpected response from AI.' };
+        }
+
+        return { ok: true, repos: parsed };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         return { ok: false, error: msg };

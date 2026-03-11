@@ -53,7 +53,7 @@ export function ProjectLibrary({
   return (
     <div style={styles.sidebar}>
       {/* App name */}
-      <div style={styles.brand}>GUI Bridge</div>
+      <div style={styles.brand}>CLUI</div>
 
       {/* Add New */}
       <button
@@ -177,8 +177,7 @@ const styles: Record<string, React.CSSProperties> = {
   brand: {
     fontSize: 13, fontWeight: 800, letterSpacing: '-0.02em',
     padding: '4px 8px 10px',
-    background: 'linear-gradient(90deg, #a78bfa, #60a5fa)',
-    WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
+    color: 'var(--text)',
   },
   addBtn: {
     display: 'flex', alignItems: 'center', gap: 6,
@@ -189,9 +188,9 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 8,
   },
   addBtnActive: {
-    background: 'rgba(167, 139, 250, 0.1)',
-    borderColor: 'rgba(167, 139, 250, 0.4)',
-    color: '#a78bfa',
+    background: 'var(--surface-2)',
+    borderColor: 'var(--border)',
+    color: 'var(--text)',
   },
   addIcon: { fontSize: 15 },
   sectionLabel: {
@@ -207,7 +206,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 13, cursor: 'pointer', textAlign: 'left' as const,
     position: 'relative',
   },
-  projectItemActive: { background: 'rgba(167, 139, 250, 0.12)', color: '#a78bfa' },
+  projectItemActive: { background: 'var(--surface-2)', color: 'var(--text)', fontWeight: 600 },
   projectItemHovered: { background: 'var(--surface-2)', color: 'var(--text)' },
   projectName: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   noSchemaDot: {
@@ -246,5 +245,5 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'transparent', color: 'var(--text-muted)',
     fontSize: 13, cursor: 'pointer', textAlign: 'left' as const, width: '100%',
   },
-  navItemActive: { background: 'var(--surface-2)', color: 'var(--text)' },
+  navItemActive: { background: 'var(--surface-2)', color: 'var(--text)', fontWeight: 600 },
 };

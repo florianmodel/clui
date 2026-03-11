@@ -72,7 +72,13 @@ I'll give you a CapabilityDump — a structured analysis of a CLI tool including
   RIGHT: for f in /input/*.pdf; do tool "$f" -o /output/; done
   - In bash: ALWAYS quote path variables ("$f" not $f) to handle filenames with spaces
   - For batch output where each input produces an output, derive output name from input filename: '/output/' + os.path.splitext(f)[0] + '.out' (do NOT hardcode a fixed name that gets overwritten each iteration)
-- For output paths: write /output/{output_step_id} or a fixed pattern like -o /output/%(title)s.%(ext)s
+- For output paths: always write a FULL file path — never the bare directory '/output/'.
+  WRONG: m.write('/output/')         <- '/output/' is a directory, not a file — IsADirectoryError
+  WRONG: open('/output/', 'wb')      <- same error
+  RIGHT (single merged output): m.write('/output/merged.pdf')
+  RIGHT (step-based output): -o /output/{output_step_id}
+  RIGHT (tool with output dir support): -o /output/ (only valid when the CLI tool itself creates filenames)
+  RIGHT (yt-dlp style): -o /output/%(title)s.%(ext)s
 - The projectId should be the tool's common name in kebab-case (e.g. "yt-dlp", "black").
 - The dockerImage field must be exactly: "${dockerImage}"
 - The version field must be: "1.0.0"

@@ -1,10 +1,10 @@
-# GUI Bridge — CLAUDE.md
+# CLUI — CLAUDE.md
 
 > Claude Code reads this file automatically at session start. Keep it updated.
 
 ## What is this project?
 
-**GUI Bridge** is a desktop app (Electron) that lets non-technical users run any GitHub CLI tool through an auto-generated graphical interface. Users search for a project, install it into a Docker container, and the app analyzes the tool's CLI to generate a point-and-click UI.
+**CLUI** (formerly GUI Bridge) is a desktop app (Electron) that lets non-technical users run any GitHub CLI tool through an auto-generated graphical interface. Users search for a project, install it into a Docker container, and the app analyzes the tool's CLI to generate a point-and-click UI.
 
 ## Tech Stack
 

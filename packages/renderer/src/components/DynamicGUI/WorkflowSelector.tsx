@@ -37,7 +37,7 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'background 0.15s, color 0.15s',
   },
   tabActive: {
-    background: 'var(--accent)', color: '#0f0c29',
+    background: 'var(--accent)', color: 'var(--bg)',
   },
   tabInactive: {
     background: 'transparent', color: 'var(--text-muted)',

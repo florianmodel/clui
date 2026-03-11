@@ -52,6 +52,10 @@ export enum IPCChannel {
   PROJECT_OPEN_FOLDER = 'project:openFolder',
   PROJECT_GENERATE_UI = 'project:generateUi',
   PROJECT_IMPROVE = 'project:improve',
+  WORKFLOW_ADD = 'workflow:add',
+
+  // GitHub AI recommendation
+  GITHUB_RECOMMEND = 'github:recommend',
 
   // App
   APP_GET_PATH = 'app:getPath',
@@ -412,6 +416,40 @@ export interface AppConfirmRequest {
 
 export interface AppConfirmResponse {
   confirmed: boolean;
+}
+
+// ── Workflow add (LLM-powered) ─────────────────────────────────────────────────
+
+export interface WorkflowAddRequest {
+  projectId: string;
+  description: string;
+  currentSchema: UISchema;
+}
+
+export interface WorkflowAddResponse {
+  ok: boolean;
+  schema?: UISchema;
+  infeasible?: string;
+  error?: string;
+}
+
+// ── GitHub AI recommendation ───────────────────────────────────────────────────
+
+export interface RepoSuggestion {
+  owner: string;
+  repo: string;
+  description: string;
+  why: string;
+}
+
+export interface GithubRecommendRequest {
+  description: string;
+}
+
+export interface GithubRecommendResponse {
+  ok: boolean;
+  repos?: RepoSuggestion[];
+  error?: string;
 }
 
 // ── Docker status push ─────────────────────────────────────────────────────────

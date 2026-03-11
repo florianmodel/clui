@@ -41,6 +41,10 @@ import {
   type ProjectGenerateUiResponse,
   type ProjectImproveRequest,
   type ProjectImproveResponse,
+  type WorkflowAddRequest,
+  type WorkflowAddResponse,
+  type GithubRecommendRequest,
+  type GithubRecommendResponse,
   type FileGetInfoRequest,
   type FileGetInfoResponse,
   type AppConfirmRequest,
@@ -94,6 +98,7 @@ export interface ElectronAPI {
   };
   github: {
     search: (req: GithubSearchRequest) => Promise<GithubSearchResponse>;
+    recommend: (req: GithubRecommendRequest) => Promise<GithubRecommendResponse>;
   };
   projects: {
     install: (req: ProjectInstallRequest) => Promise<ProjectInstallResponse>;
@@ -103,6 +108,7 @@ export interface ElectronAPI {
     openFolder: (projectId: string) => Promise<void>;
     generateUi: (req: ProjectGenerateUiRequest) => Promise<ProjectGenerateUiResponse>;
     improve: (req: ProjectImproveRequest) => Promise<ProjectImproveResponse>;
+    addWorkflow: (req: WorkflowAddRequest) => Promise<WorkflowAddResponse>;
   };
   on: {
     log: (callback: (event: ExecLogEvent) => void) => () => void;
@@ -190,6 +196,8 @@ const api: ElectronAPI = {
   github: {
     search: (req: GithubSearchRequest) =>
       ipcRenderer.invoke(IPCChannel.GITHUB_SEARCH, req),
+    recommend: (req: GithubRecommendRequest) =>
+      ipcRenderer.invoke(IPCChannel.GITHUB_RECOMMEND, req),
   },
 
   projects: {
@@ -207,6 +215,8 @@ const api: ElectronAPI = {
       ipcRenderer.invoke(IPCChannel.PROJECT_GENERATE_UI, req),
     improve: (req: ProjectImproveRequest) =>
       ipcRenderer.invoke(IPCChannel.PROJECT_IMPROVE, req),
+    addWorkflow: (req: WorkflowAddRequest) =>
+      ipcRenderer.invoke(IPCChannel.WORKFLOW_ADD, req),
   },
 
   on: {

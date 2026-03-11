@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
-import type { SearchResult, ProjectMeta } from '@gui-bridge/shared';
+import type { SearchResult, ProjectMeta, RepoSuggestion } from '@gui-bridge/shared';
 import { ResultCard } from './ResultCard.js';
 
 const POPULAR_QUERIES = [
@@ -20,6 +20,12 @@ export function ProjectBrowser({ installedProjects, onInstall }: Props) {
   const [rateLimited, setRateLimited] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // AI recommendation state
+  const [recommendQuery, setRecommendQuery] = useState('');
+  const [recommending, setRecommending] = useState(false);
+  const [recommendations, setRecommendations] = useState<RepoSuggestion[] | null>(null);
+  const [recommendError, setRecommendError] = useState<string | null>(null);
+
   const doSearch = useCallback(async (q: string) => {
     if (!q.trim()) {
       setResults(null);
@@ -31,6 +37,7 @@ export function ProjectBrowser({ installedProjects, onInstall }: Props) {
     setSearching(true);
     setError(null);
     setRateLimited(false);
+    setRecommendations(null);
 
     const res = await window.electronAPI.github.search({ query: q });
     setSearching(false);
@@ -57,9 +64,41 @@ export function ProjectBrowser({ installedProjects, onInstall }: Props) {
     doSearch(q);
   }
 
+  async function handleRecommend() {
+    if (!recommendQuery.trim()) return;
+    setRecommending(true);
+    setRecommendError(null);
+    setRecommendations(null);
+    setResults(null);
+    setQuery('');
+
+    const res = await window.electronAPI.github.recommend({ description: recommendQuery.trim() });
+    setRecommending(false);
+
+    if (!res.ok) {
+      setRecommendError(res.error ?? 'Recommendation failed');
+    } else {
+      setRecommendations(res.repos ?? []);
+    }
+  }
+
+  function suggestionToSearchResult(s: RepoSuggestion): SearchResult {
+    return {
+      fullName: `${s.owner}/${s.repo}`,
+      owner: s.owner,
+      repo: s.repo,
+      description: s.description,
+      stars: 0,
+      language: '',
+      topics: [],
+      lastUpdated: new Date().toISOString(),
+      htmlUrl: `https://github.com/${s.owner}/${s.repo}`,
+    };
+  }
+
   return (
     <div style={styles.container}>
-      {/* Search bar */}
+      {/* GitHub search bar */}
       <div style={styles.searchBox}>
         <div style={styles.searchRow}>
           <span style={styles.searchIcon}>🔍</span>
@@ -70,6 +109,7 @@ export function ProjectBrowser({ installedProjects, onInstall }: Props) {
             placeholder="Search for CLI tools on GitHub…"
             style={styles.input}
             autoFocus
+            onFocus={() => { if (recommendations) { setRecommendations(null); } }}
           />
           {searching && <span style={styles.spinner}>⏳</span>}
         </div>
@@ -87,6 +127,29 @@ export function ProjectBrowser({ installedProjects, onInstall }: Props) {
         )}
       </div>
 
+      {/* AI recommendation section */}
+      <div style={styles.recommendBox}>
+        <div style={styles.recommendLabel}>Or describe what you want:</div>
+        <div style={styles.recommendRow}>
+          <input
+            type="text"
+            value={recommendQuery}
+            onChange={(e) => setRecommendQuery(e.target.value)}
+            placeholder="e.g. merge PDFs, compress images, download videos…"
+            style={styles.recommendInput}
+            onKeyDown={(e) => { if (e.key === 'Enter') handleRecommend(); }}
+          />
+          <button
+            type="button"
+            style={styles.recommendBtn}
+            onClick={handleRecommend}
+            disabled={recommending || !recommendQuery.trim()}
+          >
+            {recommending ? '…' : 'Find Tools'}
+          </button>
+        </div>
+      </div>
+
       {/* Rate limit warning */}
       {rateLimited && (
         <div style={styles.rateLimitMsg}>
@@ -99,8 +162,46 @@ export function ProjectBrowser({ installedProjects, onInstall }: Props) {
         <div style={styles.errorMsg}>{error}</div>
       )}
 
-      {/* Results */}
-      {results !== null && (
+      {/* Recommendation error */}
+      {recommendError && (
+        <div style={styles.errorMsg}>{recommendError}</div>
+      )}
+
+      {/* AI Recommendations */}
+      {recommendations !== null && (
+        <div style={styles.results}>
+          <div style={styles.resultsHeader}>
+            AI suggestions for &ldquo;{recommendQuery}&rdquo;
+          </div>
+          {recommendations.length === 0 ? (
+            <div style={styles.noResults}>No suggestions found.</div>
+          ) : (
+            <div style={styles.resultList}>
+              {recommendations.map((s) => (
+                <div key={`${s.owner}/${s.repo}`} style={styles.suggestionCard}>
+                  <div style={styles.suggestionHeader}>
+                    <span style={styles.suggestionName}>{s.owner}/{s.repo}</span>
+                  </div>
+                  <p style={styles.suggestionDesc}>{s.description}</p>
+                  <p style={styles.suggestionWhy}>{s.why}</p>
+                  <div style={styles.suggestionFooter}>
+                    <button
+                      type="button"
+                      style={styles.installBtn}
+                      onClick={() => onInstall(suggestionToSearchResult(s))}
+                    >
+                      Install
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* GitHub search results */}
+      {results !== null && recommendations === null && (
         <div style={styles.results}>
           {results.length === 0 ? (
             <div style={styles.noResults}>No results found for &ldquo;{query}&rdquo;</div>
@@ -125,7 +226,7 @@ export function ProjectBrowser({ installedProjects, onInstall }: Props) {
       )}
 
       {/* Empty state */}
-      {!query && results === null && (
+      {!query && results === null && recommendations === null && !recommendError && (
         <div style={styles.emptyState}>
           <div style={styles.emptyIcon}>🔎</div>
           <div style={styles.emptyTitle}>Find any CLI tool on GitHub</div>
@@ -165,6 +266,29 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 20, color: 'var(--text-muted)',
     cursor: 'pointer',
   },
+
+  // AI recommendation
+  recommendBox: {
+    display: 'flex', flexDirection: 'column', gap: 8,
+    padding: '12px 14px',
+    background: 'var(--surface)',
+    border: '1px solid var(--border)', borderRadius: 12,
+  },
+  recommendLabel: { fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, letterSpacing: '0.05em' },
+  recommendRow: { display: 'flex', gap: 8, alignItems: 'center' },
+  recommendInput: {
+    flex: 1, background: 'var(--surface-2)',
+    border: '1px solid var(--border)', borderRadius: 8, outline: 'none',
+    fontSize: 13, color: 'var(--text)', fontFamily: 'inherit',
+    padding: '7px 12px',
+  },
+  recommendBtn: {
+    border: 'none', borderRadius: 8,
+    background: 'var(--accent)', color: 'var(--bg)',
+    fontWeight: 700, fontSize: 13, padding: '7px 14px', cursor: 'pointer',
+    flexShrink: 0,
+  },
+
   results: { display: 'flex', flexDirection: 'column', gap: 10 },
   resultsHeader: { fontSize: 12, color: 'var(--text-muted)' },
   resultList: { display: 'flex', flexDirection: 'column', gap: 8 },
@@ -172,6 +296,28 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 20, textAlign: 'center',
     fontSize: 13, color: 'var(--text-muted)', fontStyle: 'italic',
   },
+
+  // Suggestion card (simpler than ResultCard)
+  suggestionCard: {
+    padding: '12px 14px',
+    background: 'var(--surface)',
+    border: '1px solid var(--border)', borderRadius: 10,
+    display: 'flex', flexDirection: 'column', gap: 6,
+  },
+  suggestionHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+  suggestionName: { fontSize: 14, fontWeight: 700, color: 'var(--text)' },
+  suggestionDesc: { fontSize: 13, color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 },
+  suggestionWhy: {
+    fontSize: 12, color: 'var(--text-muted)', margin: 0, lineHeight: 1.5,
+    fontStyle: 'italic',
+  },
+  suggestionFooter: { display: 'flex', justifyContent: 'flex-end', marginTop: 2 },
+  installBtn: {
+    border: 'none', borderRadius: 8,
+    background: 'var(--accent)', color: 'var(--bg)',
+    fontWeight: 700, fontSize: 13, padding: '6px 16px', cursor: 'pointer',
+  },
+
   rateLimitMsg: {
     padding: '10px 14px', fontSize: 13,
     background: 'rgba(251, 191, 36, 0.08)',
