@@ -32,7 +32,9 @@ Fix the command template so it succeeds. Respond with ONLY this JSON object (no 
 
 Rules:
 - Use the EXACT same {step_id} placeholders as the original (step IDs: ${stepIds})
-- File inputs must reference /input/{step_id}; output paths must use /output/
+- Docker volume layout: /input/ is a flat directory containing all user-selected files (each mounted by its basename). /output/ is where results go.
+- For single-file steps: /input/{step_id} expands to /input/filename.ext at runtime — correct.
+- For multi-file steps (merge, combine, batch): iterate /input/ directly (e.g. os.listdir('/input'), /input/*.pdf). Do NOT use /input/{step_id} as a directory — {step_id} is a filename, not a subdirectory.
 - Keep the tool binary name unchanged
 - explanation must be ≤15 words
 - Output ONLY valid JSON, nothing else`;
