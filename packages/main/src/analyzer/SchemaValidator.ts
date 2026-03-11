@@ -1,4 +1,4 @@
-import type { UISchema } from '@gui-bridge/shared';
+import type { UISchema, Step } from '@gui-bridge/shared';
 
 export class SchemaValidator {
   /**
@@ -49,17 +49,17 @@ export class SchemaValidator {
       }
 
       // Check that all {placeholder}s in command reference existing step IDs
-      const stepIds = new Set(workflow.steps?.map(s => s.id) ?? []);
+      const steps = workflow.steps ?? [];
+      const stepIds = new Set(steps.map(s => s.id));
       const placeholders = workflow.execute.command.match(/\{(\w+)\}/g) ?? [];
-      for (const placeholder of placeholders) {
-        const id = placeholder.slice(1, -1);
-        if (!stepIds.has(id)) {
-          console.warn(`[SchemaValidator] Workflow "${workflow.id}" command references {${id}} but no step with that ID exists`);
-        }
+      const badPlaceholders = placeholders.filter(p => !stepIds.has(p.slice(1, -1)));
+      if (badPlaceholders.length > 0) {
+        console.warn(`[SchemaValidator] Workflow "${workflow.id}": mismatched placeholders ${badPlaceholders.join(', ')} — rebuilding command`);
+        workflow.execute.command = this.repairCommand(workflow.execute.command, steps);
       }
 
       // Validate individual steps
-      for (const step of workflow.steps ?? []) {
+      for (const step of steps) {
         if (!step.id || !step.label || !step.type) {
           throw new Error(`Step missing required fields: ${JSON.stringify(step)}`);
         }
@@ -69,5 +69,36 @@ export class SchemaValidator {
         }
       }
     }
+  }
+
+  /**
+   * Rebuild a command template using actual step IDs when the LLM used mismatched placeholder names.
+   * Extracts the tool name from the existing command and reconstructs args from steps.
+   */
+  private repairCommand(command: string, steps: Step[]): string {
+    // Extract the tool name (first word before any placeholder or flag)
+    const toolMatch = command.match(/^([^\s{]+)/);
+    const toolName = toolMatch ? toolMatch[1] : 'tool';
+
+    const parts = [toolName];
+    for (const step of steps) {
+      const flagName = '--' + step.id.replace(/_/g, '-');
+      if (step.type === 'file_input') {
+        parts.push(`/input/{${step.id}}`);
+      } else if (step.type === 'toggle') {
+        // Expands to --flag-name when true, stripped when false
+        parts.push(`{${step.id}}`);
+      } else if (/url|uri|link|source/i.test(step.id)) {
+        // URL-like steps are positional
+        parts.push(`{${step.id}}`);
+      } else if (step.id === 'output_filename' || step.id === 'output_file' || step.id === 'output') {
+        parts.push(`-o /output/{${step.id}}`);
+      } else {
+        parts.push(`${flagName} {${step.id}}`);
+      }
+    }
+    const repaired = parts.join(' ');
+    console.log(`[SchemaValidator] Repaired command: ${repaired}`);
+    return repaired;
   }
 }

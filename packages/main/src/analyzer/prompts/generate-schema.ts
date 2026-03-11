@@ -10,20 +10,31 @@ export function buildSchemaGenerationPrompt(dump: CapabilityDump, dockerImage: s
       installInstructions: undefined, // not needed for UI generation
     },
     introspectionMethod: dump.introspectionMethod,
-    // For large argument sets, prioritize required args + first 60 total
+    // For large argument sets, prioritize required args + first 35 total
+    // Strip verbose description text to keep prompt compact
     arguments: [
       ...dump.arguments.filter(a => a.required),
       ...dump.arguments.filter(a => !a.required),
-    ].slice(0, 60),
-    subcommands: dump.subcommands.slice(0, 20).map(sc => ({
+    ].slice(0, 35).map(a => ({
+      name: a.name,
+      type: a.type,
+      required: a.required,
+      default: a.default,
+      choices: a.choices,
+      // Truncate descriptions to keep prompt size down
+      description: a.description?.slice(0, 80),
+    })),
+    subcommands: dump.subcommands.slice(0, 10).map(sc => ({
       name: sc.name,
-      description: sc.description,
+      description: sc.description?.slice(0, 80),
       arguments: [
         ...sc.arguments.filter(a => a.required),
         ...sc.arguments.filter(a => !a.required),
-      ].slice(0, 20),
+      ].slice(0, 10).map(a => ({
+        name: a.name, type: a.type, required: a.required, default: a.default,
+      })),
     })),
-    helpText: dump.helpText?.slice(0, 2000),
+    helpText: dump.helpText?.slice(0, 800),
   };
 
   return `You are a UX expert converting a command-line tool into a graphical user interface.
@@ -40,19 +51,22 @@ I'll give you a CapabilityDump — a structured analysis of a CLI tool including
    - Yes/no flags → toggle
    - Free text → text_input
    - Numbers with ranges → number (with min/max)
+   - **Multi-file input**: If the tool merges, combines, concatenates, or batch-processes multiple files (e.g. "merge PDFs", "join videos", "combine images"), set \`"multiple": true\` on the file_input step. Think: "Would a user need to select more than one file for this workflow?" If yes, use \`multiple: true\`.
 4. **Write human-friendly labels and guidance.** The user is non-technical. Instead of "--output-format", say "Output Format". Instead of "-crf", say "Quality (lower = better, 18-28 recommended)". Add guidance text explaining what each step does in plain English.
 5. **Build the command template** that maps step IDs to the actual CLI command. Use {step_id} placeholders. File inputs should reference /input/{step_id} (files are mounted there at runtime). Output goes to /output/.
 6. **Skip internal/developer flags.** Things like --verbose, --debug, --version, --help, --config-file, --log-level should usually NOT be in the UI.
 
-## Important rules:
-- Output ONLY valid JSON. No markdown code fences, no explanation text before or after.
+## Critical output rules — MUST follow to avoid truncation:
+- Output ONLY valid JSON. No markdown fences, no text before or after.
+- **Maximum 3 workflows.** Maximum 5 steps per workflow. No exceptions.
+- **Keep all string values SHORT:** labels ≤ 5 words, descriptions ≤ 10 words, guidance ≤ 20 words.
+- **Omit null/optional fields entirely** — do not include keys with null values.
 - Every workflow must have a working command template using {step_id} placeholders.
-- File step IDs map to /input/{step_id} in the command. Output goes to /output/.
-- Keep it simple. 2-5 steps per workflow is ideal. Never more than 8.
-- If the tool has subcommands, each major subcommand becomes its own workflow.
+- **CRITICAL: Every {placeholder} in the command MUST exactly match a step's "id" field.** Never invent names. If a step has id "video_url", write {video_url} in the command — NOT {url_arg} or {url_flag}.
+- For toggle steps: write {step_id} in the command. It expands to --step-id when enabled and is omitted when disabled.
+- For file_input steps: write /input/{step_id} in the command (files are mounted there).
+- For output paths: write /output/{output_step_id} or a fixed pattern like -o /output/%(title)s.%(ext)s
 - The projectId should be the tool's common name in kebab-case (e.g. "yt-dlp", "black").
-- Include sensible defaults wherever possible.
-- For file type filters (accept), be generous — include common formats the tool supports.
 - The dockerImage field must be exactly: "${dockerImage}"
 - The version field must be: "1.0.0"
 
@@ -62,44 +76,39 @@ I'll give you a CapabilityDump — a structured analysis of a CLI tool including
 ${JSON.stringify(trimmedDump, null, 2)}
 \`\`\`
 
-## Output format
-
-Respond with ONLY a valid JSON object matching this TypeScript interface:
+## Output format — respond with ONLY this JSON (no extra fields, omit nulls):
 
 {
-  projectId: string,           // kebab-case tool name
-  projectName: string,         // Human-friendly name (e.g. "YT-DLP", "Black")
-  description: string,         // One-sentence description for non-technical users
-  version: "1.0.0",
-  dockerImage: "${dockerImage}",
-  workflows: [
+  "projectId": "tool-name",
+  "projectName": "Tool Name",
+  "description": "One short sentence.",
+  "version": "1.0.0",
+  "dockerImage": "${dockerImage}",
+  "workflows": [
     {
-      id: string,              // kebab-case
-      name: string,            // e.g. "Download Video"
-      description: string,     // What this workflow does
-      guidance: string,        // Step-by-step instructions, 1-3 sentences
-      steps: [
+      "id": "workflow-id",
+      "name": "Workflow Name",
+      "description": "Brief description.",
+      "guidance": "Short instruction.",
+      "steps": [
         {
-          id: string,          // snake_case, used in command template as {id}
-          label: string,       // Human-friendly label
-          description: string, // Helper text shown below the input
-          type: "text_input" | "number" | "dropdown" | "radio" | "checkbox" | "file_input" | "directory_input" | "textarea" | "toggle",
-          required: boolean,
-          default: string | number | boolean | null,
-          placeholder: string | null,
-          options: [{ value: string, label: string, description: string }] | null,  // for dropdown/radio
-          accept: string | null,  // for file_input: ".mp4,.avi,.mkv"
-          multiple: boolean | null,
-          min: number | null,
-          max: number | null,
-          step: number | null
+          "id": "step_id",
+          "label": "Short Label",
+          "type": "text_input",
+          "required": true,
+          "default": "value or omit",
+          "placeholder": "hint or omit",
+          "options": [{"value":"v","label":"L"}],
+          "accept": ".mp4 or omit",
+          "multiple": true,
+          "min": 0,
+          "max": 100
         }
       ],
-      execute: {
-        command: string,         // Full CLI command with {step_id} placeholders
-        outputDir: "/output",
-        outputPattern: string | null,   // Expected output glob, e.g. "*.mp4"
-        successMessage: string
+      "execute": {
+        "command": "tool --flag {step_id} /input/{file_step} -o /output/result",
+        "outputDir": "/output",
+        "successMessage": "Done."
       }
     }
   ]

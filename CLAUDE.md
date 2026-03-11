@@ -88,8 +88,8 @@ clui/                              # repo root (also Electron app root — "main
 | 2 | UI schema spec + dynamic renderer | **COMPLETE** |
 | 3 | Static CLI introspection (argparse/click/help) | **COMPLETE** |
 | 4 | LLM-powered UI generation (Claude API) | **COMPLETE** |
-| 5 | Project browser + auto-setup | NOT STARTED |
-| 6 | Polish, error handling, UX | NOT STARTED |
+| 5 | Project browser + auto-setup | **COMPLETE** |
+| 6 | Polish, error handling, UX | **COMPLETE** |
 | 7+ | Tool chaining / pipelines (future) | NOT STARTED |
 
 ## Key Commands

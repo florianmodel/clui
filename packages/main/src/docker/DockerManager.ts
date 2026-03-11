@@ -15,6 +15,10 @@ export interface RunOptions {
   extraVolumes?: ExtraVolume[];  // additional volume mounts
   env?: Record<string, string>;
   timeout?: number;    // ms, default 5 minutes
+  /** Run command via sh -c, overriding any image ENTRYPOINT. Handles shell quoting. */
+  useShell?: boolean;
+  /** Docker network mode. Default: 'none'. Use 'bridge' for tools that need internet. */
+  network?: string;
 }
 
 export interface ExecutionResult {
@@ -145,7 +149,12 @@ export class DockerManager {
     opts: RunOptions,
     onLog: LogCallback,
   ): Promise<ExecutionResult> {
-    const { inputDir, outputDir, extraVolumes = [], env = {}, timeout = 5 * 60 * 1000 } = opts;
+    const {
+      inputDir, outputDir, extraVolumes = [], env = {},
+      timeout = 5 * 60 * 1000,
+      useShell = false,
+      network = 'none',
+    } = opts;
 
     const binds: string[] = [];
     if (inputDir) binds.push(`${inputDir}:/input:ro`);
@@ -161,13 +170,19 @@ export class DockerManager {
 
     let container: Dockerode.Container;
     try {
+      // When useShell=true, override the image's ENTRYPOINT so we run via sh -c.
+      // This handles: image ENTRYPOINT conflicts, shell quoting, and compound commands.
+      const containerCmdConfig = useShell
+        ? { Entrypoint: ['sh', '-c'], Cmd: [command.join(' ')] }
+        : { Cmd: command };
+
       container = await this.docker.createContainer({
         Image: image,
-        Cmd: command,
+        ...containerCmdConfig,
         Env: envList,
         HostConfig: {
           Binds: binds,
-          NetworkMode: 'none',   // no internet after build
+          NetworkMode: network,
           Memory: 2 * 1024 * 1024 * 1024,  // 2 GB
           NanoCpus: 2 * 1e9,               // 2 CPUs
           AutoRemove: false,

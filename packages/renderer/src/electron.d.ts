@@ -26,6 +26,28 @@ import type {
   ValidateKeyRequest,
   ValidateKeyResponse,
   AnalysisProgressEvent,
+  ExecAutofixRequest,
+  ExecAutofixResponse,
+  SchemaSaveRequest,
+  SchemaSaveResponse,
+  GithubSearchRequest,
+  GithubSearchResponse,
+  ProjectInstallRequest,
+  ProjectInstallResponse,
+  ProjectListResponse,
+  ProjectGetRequest,
+  ProjectGetResponse,
+  ProjectRemoveRequest,
+  ProjectGenerateUiRequest,
+  ProjectGenerateUiResponse,
+  ProjectImproveRequest,
+  ProjectImproveResponse,
+  FileGetInfoRequest,
+  FileGetInfoResponse,
+  AppConfirmRequest,
+  AppConfirmResponse,
+  DockerStatusEvent,
+  InstallProgressEvent,
 } from '@gui-bridge/shared';
 
 declare global {
@@ -42,10 +64,12 @@ declare global {
         run: (req: ExecRunRequest) => Promise<ExecRunResponse>;
         schemaRun: (req: ExecSchemaRunRequest) => Promise<ExecRunResponse>;
         cancel: () => Promise<void>;
+        autofix: (req: ExecAutofixRequest) => Promise<ExecAutofixResponse>;
       };
       schema: {
         load: (req: SchemaLoadRequest) => Promise<SchemaLoadResponse>;
         generate: (req: SchemaGenerateRequest) => Promise<SchemaGenerateResponse>;
+        save: (req: SchemaSaveRequest) => Promise<SchemaSaveResponse>;
       };
       analyzer: {
         run: (req: AnalyzerRunRequest) => Promise<AnalyzerRunResponse>;
@@ -60,11 +84,34 @@ declare global {
         savePick: (req: FileSavePickRequest) => Promise<FileSavePickResponse>;
         copy: (req: FileCopyRequest) => Promise<void>;
         showInFinder: (filePath: string) => Promise<void>;
+        open: (filePath: string) => Promise<void>;
+        getInfo: (req: FileGetInfoRequest) => Promise<FileGetInfoResponse>;
+      };
+      dialog: {
+        confirm: (req: AppConfirmRequest) => Promise<AppConfirmResponse>;
+      };
+      clipboard: {
+        write: (text: string) => Promise<void>;
+      };
+      github: {
+        search: (req: GithubSearchRequest) => Promise<GithubSearchResponse>;
+      };
+      projects: {
+        install: (req: ProjectInstallRequest) => Promise<ProjectInstallResponse>;
+        list: () => Promise<ProjectListResponse>;
+        get: (req: ProjectGetRequest) => Promise<ProjectGetResponse>;
+        remove: (req: ProjectRemoveRequest) => Promise<{ ok: boolean; error?: string }>;
+        openFolder: (projectId: string) => Promise<void>;
+        generateUi: (req: ProjectGenerateUiRequest) => Promise<ProjectGenerateUiResponse>;
+        improve: (req: ProjectImproveRequest) => Promise<ProjectImproveResponse>;
       };
       on: {
         log: (callback: (event: ExecLogEvent) => void) => () => void;
         complete: (callback: (event: ExecCompleteEvent) => void) => () => void;
         analysisProgress: (callback: (event: AnalysisProgressEvent) => void) => () => void;
+        installProgress: (callback: (event: InstallProgressEvent) => void) => () => void;
+        dockerStatus: (callback: (event: DockerStatusEvent) => void) => () => void;
+        menuAction: (callback: (action: string) => void) => () => void;
       };
     };
   }

@@ -1,6 +1,7 @@
-import { ipcMain, BrowserWindow, shell, dialog, app } from 'electron';
+import { ipcMain, BrowserWindow, shell, dialog, app, clipboard } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import {
   IPCChannel,
   type DockerBuildRequest,
@@ -27,16 +28,62 @@ import {
   type ValidateKeyRequest,
   type ValidateKeyResponse,
   type AnalysisProgressEvent,
+  type ExecAutofixRequest,
+  type ExecAutofixResponse,
+  type SchemaSaveRequest,
+  type SchemaSaveResponse,
+  type GithubSearchRequest,
+  type GithubSearchResponse,
+  type ProjectInstallRequest,
+  type ProjectInstallResponse,
+  type ProjectListResponse,
+  type ProjectGetRequest,
+  type ProjectGetResponse,
+  type ProjectRemoveRequest,
+  type ProjectGenerateUiRequest,
+  type ProjectGenerateUiResponse,
+  type ProjectImproveRequest,
+  type ProjectImproveResponse,
+  type FileGetInfoRequest,
+  type FileGetInfoResponse,
+  type FileInfo,
+  type FileType,
+  type AppConfirmRequest,
+  type AppConfirmResponse,
+  type InstallProgressEvent,
 } from '@gui-bridge/shared';
 
 import { DockerManager } from '../docker/index.js';
 import { buildCommand, collectInputFiles } from '../executor/index.js';
 import { Analyzer } from '../analyzer/index.js';
 import { LLMClient, MockLLMClient } from '../analyzer/LLMClient.js';
+import { SchemaCache } from '../analyzer/SchemaCache.js';
 import { ConfigManager } from '../config/ConfigManager.js';
+import { buildFixCommandPrompt } from '../analyzer/prompts/fix-command.js';
+import { GitHubClient } from '../github/GitHubClient.js';
+import { ProjectManager } from '../projects/ProjectManager.js';
 
 const docker = new DockerManager();
 const configManager = new ConfigManager();
+const schemaCache = new SchemaCache();
+const githubClient = new GitHubClient();
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+function categorizeFile(ext: string): FileType {
+  if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico'].includes(ext)) return 'image';
+  if (['.mp4', '.avi', '.mov', '.mkv', '.webm', '.m4v'].includes(ext)) return 'video';
+  if (['.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a'].includes(ext)) return 'audio';
+  if (['.pdf', '.doc', '.docx', '.txt', '.md', '.rtf'].includes(ext)) return 'document';
+  if (['.json', '.csv', '.tsv', '.xml', '.yaml', '.yml'].includes(ext)) return 'data';
+  if (['.js', '.ts', '.py', '.rb', '.go', '.rs', '.sh'].includes(ext)) return 'data';
+  return 'other';
+}
 
 /** Resolve a path that may be relative (from renderer) to an absolute host path. */
 function resolveAppPath(p: string): string {
@@ -46,6 +93,10 @@ function resolveAppPath(p: string): string {
 }
 
 export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void {
+
+  // ProjectManager is instantiated here so app.getAppPath() is available
+  const scriptsDir = path.join(app.getAppPath(), 'packages/main/src/analyzer/analyzer-scripts');
+  const projectManager = new ProjectManager(docker, scriptsDir);
 
   // ── app:getPath ────────────────────────────────────────────────────────
   ipcMain.handle(IPCChannel.APP_GET_PATH, (_event, name: string): string => {
@@ -256,7 +307,6 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       // Build command from template + inputs
       const builtCommand = buildCommand(req.workflow, req.inputs);
       sendLog('system', `Command: ${builtCommand}`);
-      const commandParts = builtCommand.split(/\s+/).filter(Boolean);
 
       // Collect input files for volume mount
       const inputFilePaths = collectInputFiles(req.workflow, req.inputs);
@@ -278,8 +328,8 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       try {
         const result = await docker.runCommand(
           req.dockerImage,
-          commandParts,
-          { inputDir, outputDir: tempOutputDir },
+          [builtCommand],
+          { inputDir, outputDir: tempOutputDir, useShell: true, network: 'bridge' },
           sendLog,
         );
 
@@ -410,6 +460,276 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         sendProgress({ stage: 'error', message: msg });
+        return { ok: false, error: msg };
+      }
+    },
+  );
+
+  // ── exec:autofix ───────────────────────────────────────────────────────
+  // Asks Claude to suggest a fixed command template after a failed run.
+  ipcMain.handle(
+    IPCChannel.EXEC_AUTOFIX,
+    async (_event, req: ExecAutofixRequest): Promise<ExecAutofixResponse> => {
+      const config = configManager.getConfig();
+
+      if (config.mockMode || !config.anthropicApiKey) {
+        return { ok: false, error: 'Auto-fix requires an Anthropic API key. Add one in Settings.' };
+      }
+
+      try {
+        const llm = new LLMClient(config.anthropicApiKey);
+        const prompt = buildFixCommandPrompt(req.workflow, req.failedCommand, req.errorOutput);
+        const text = await llm.rawComplete(prompt);
+
+        // Strip markdown fences if present, then extract the JSON object
+        const stripped = text.replace(/^```json\s*/m, '').replace(/```\s*$/m, '').trim();
+        const firstBrace = stripped.indexOf('{');
+        const lastBrace = stripped.lastIndexOf('}');
+        if (firstBrace === -1 || lastBrace === -1) {
+          return { ok: false, error: 'Could not parse fix suggestion from LLM response.' };
+        }
+
+        const parsed = JSON.parse(stripped.slice(firstBrace, lastBrace + 1)) as {
+          template: string;
+          explanation: string;
+        };
+
+        if (!parsed.template || !parsed.explanation) {
+          return { ok: false, error: 'LLM response missing template or explanation.' };
+        }
+
+        return { ok: true, template: parsed.template, explanation: parsed.explanation };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, error: msg };
+      }
+    },
+  );
+
+  // ── schema:save ────────────────────────────────────────────────────────
+  // Persists a (possibly fixed) schema to the project's cache directory.
+  ipcMain.handle(
+    IPCChannel.SCHEMA_SAVE,
+    async (_event, req: SchemaSaveRequest): Promise<SchemaSaveResponse> => {
+      try {
+        const saved = schemaCache.saveByDockerImage(req.schema);
+        return { ok: true, saved };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, saved: false, error: msg };
+      }
+    },
+  );
+
+  // ── github:search ──────────────────────────────────────────────────────
+  ipcMain.handle(
+    IPCChannel.GITHUB_SEARCH,
+    async (_event, req: GithubSearchRequest): Promise<GithubSearchResponse> => {
+      return githubClient.search(req.query);
+    },
+  );
+
+  // ── project:install ────────────────────────────────────────────────────
+  ipcMain.handle(
+    IPCChannel.PROJECT_INSTALL,
+    async (_event, req: ProjectInstallRequest): Promise<ProjectInstallResponse> => {
+      const win = getWindow();
+
+      const sendProgress = (event: InstallProgressEvent) => {
+        win?.webContents.send(IPCChannel.PROJECT_INSTALL_PROGRESS, event);
+      };
+
+      try {
+        const config = configManager.getConfig();
+        const useMock = config.mockMode === true;
+        const hasKey = !!config.anthropicApiKey;
+
+        let llmClient = null;
+        if (hasKey && !useMock) {
+          llmClient = new LLMClient(config.anthropicApiKey!);
+        } else if (useMock) {
+          llmClient = new MockLLMClient();
+        }
+
+        const meta = await projectManager.install(
+          req.owner,
+          req.repo,
+          req.searchResult,
+          llmClient,
+          sendProgress,
+        );
+
+        return { ok: true, meta };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, error: msg };
+      }
+    },
+  );
+
+  // ── project:list ───────────────────────────────────────────────────────
+  ipcMain.handle(IPCChannel.PROJECT_LIST, (): ProjectListResponse => {
+    return { projects: projectManager.listInstalled() };
+  });
+
+  // ── project:get ────────────────────────────────────────────────────────
+  ipcMain.handle(
+    IPCChannel.PROJECT_GET,
+    (_event, req: ProjectGetRequest): ProjectGetResponse => {
+      const meta = projectManager.getMeta(req.projectId);
+      if (!meta) return { ok: false, error: `Project "${req.projectId}" not found` };
+
+      const schema = projectManager.getSchema(req.projectId);
+      return { ok: true, meta, schema: schema ?? undefined };
+    },
+  );
+
+  // ── project:remove ─────────────────────────────────────────────────────
+  ipcMain.handle(
+    IPCChannel.PROJECT_REMOVE,
+    async (_event, req: ProjectRemoveRequest): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        await projectManager.uninstall(req.projectId);
+        return { ok: true };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, error: msg };
+      }
+    },
+  );
+
+  // ── project:openFolder ─────────────────────────────────────────────────
+  ipcMain.handle(IPCChannel.PROJECT_OPEN_FOLDER, (_event, projectId: string): void => {
+    const folderPath = projectManager.openFolder(projectId);
+    if (folderPath) shell.openPath(folderPath);
+  });
+
+  // ── file:open ──────────────────────────────────────────────────────────
+  ipcMain.handle(IPCChannel.FILE_OPEN, async (_event, filePath: string): Promise<void> => {
+    await shell.openPath(filePath);
+  });
+
+  // ── file:getInfo ───────────────────────────────────────────────────────
+  ipcMain.handle(
+    IPCChannel.FILE_GET_INFO,
+    (_event, req: FileGetInfoRequest): FileGetInfoResponse => {
+      try {
+        const stats = fs.statSync(req.filePath);
+        const ext = path.extname(req.filePath).toLowerCase();
+        const type = categorizeFile(ext);
+        const previewable = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'].includes(ext);
+        return {
+          ok: true,
+          info: {
+            name: path.basename(req.filePath),
+            path: req.filePath,
+            size: stats.size,
+            sizeLabel: formatFileSize(stats.size),
+            extension: ext,
+            type,
+            previewable,
+          } satisfies FileInfo,
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, error: msg };
+      }
+    },
+  );
+
+  // ── app:confirm ────────────────────────────────────────────────────────
+  ipcMain.handle(
+    IPCChannel.APP_CONFIRM,
+    async (_event, req: AppConfirmRequest): Promise<AppConfirmResponse> => {
+      const win = getWindow();
+      const result = await dialog.showMessageBox(win ?? new BrowserWindow(), {
+        type: 'question',
+        buttons: [req.confirmLabel ?? 'Confirm', 'Cancel'],
+        defaultId: 0,
+        cancelId: 1,
+        title: req.title,
+        message: req.message,
+        detail: req.detail,
+      });
+      return { confirmed: result.response === 0 };
+    },
+  );
+
+  // ── app:clipboardWrite ─────────────────────────────────────────────────
+  ipcMain.handle(IPCChannel.APP_CLIPBOARD_WRITE, (_event, text: string): void => {
+    clipboard.writeText(text);
+  });
+
+  // ── project:improve ────────────────────────────────────────────────────
+  // Refines an installed project's schema with user feedback via the LLM.
+  ipcMain.handle(
+    IPCChannel.PROJECT_IMPROVE,
+    async (_event, req: ProjectImproveRequest): Promise<ProjectImproveResponse> => {
+      const config = configManager.getConfig();
+
+      if (!config.anthropicApiKey && !config.mockMode) {
+        return { ok: false, error: 'No API key configured. Add one in Settings.' };
+      }
+
+      const meta = projectManager.getMeta(req.projectId);
+      if (!meta) {
+        return { ok: false, error: `Project "${req.projectId}" not found` };
+      }
+
+      try {
+        const useMock = config.mockMode === true;
+        const llmClient = useMock
+          ? new MockLLMClient()
+          : new LLMClient(config.anthropicApiKey!);
+
+        const analyzer = new Analyzer(docker, scriptsDir);
+        const refined = await analyzer.refineSchema(
+          meta.repoDir,
+          meta.dockerImage,
+          req.currentSchema,
+          llmClient,
+          () => {},
+          req.feedback,
+        );
+
+        // Persist the improved schema so it loads correctly next time
+        const schemaPath = path.join(os.homedir(), '.gui-bridge', 'projects', req.projectId, 'schema.json');
+        fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
+        fs.writeFileSync(schemaPath, JSON.stringify(refined, null, 2), 'utf8');
+
+        return { ok: true, schema: refined };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, error: msg };
+      }
+    },
+  );
+
+  // ── project:generateUi ─────────────────────────────────────────────────
+  ipcMain.handle(
+    IPCChannel.PROJECT_GENERATE_UI,
+    async (_event, req: ProjectGenerateUiRequest): Promise<ProjectGenerateUiResponse> => {
+      const win = getWindow();
+      const config = configManager.getConfig();
+
+      if (!config.anthropicApiKey && !config.mockMode) {
+        return { ok: false, error: 'No API key configured.' };
+      }
+
+      const sendProgress = (event: InstallProgressEvent) => {
+        win?.webContents.send(IPCChannel.PROJECT_INSTALL_PROGRESS, event);
+      };
+
+      try {
+        const useMock = config.mockMode === true;
+        const llmClient = useMock
+          ? new MockLLMClient()
+          : new LLMClient(config.anthropicApiKey!);
+
+        const schema = await projectManager.generateSchema(req.projectId, llmClient, sendProgress);
+        return { ok: true, schema };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
         return { ok: false, error: msg };
       }
     },

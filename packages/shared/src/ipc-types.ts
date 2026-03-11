@@ -34,14 +34,40 @@ export enum IPCChannel {
   // Progress events (push: main → renderer)
   ANALYSIS_PROGRESS = 'analysis:progress',
 
+  // Auto-fix (LLM-powered command correction)
+  EXEC_AUTOFIX = 'exec:autofix',
+
+  // Schema save (persist fixed schema to cache)
+  SCHEMA_SAVE = 'schema:save',
+
+  // GitHub search
+  GITHUB_SEARCH = 'github:search',
+
+  // Project management
+  PROJECT_INSTALL = 'project:install',
+  PROJECT_INSTALL_PROGRESS = 'project:installProgress', // push: main → renderer
+  PROJECT_LIST = 'project:list',
+  PROJECT_GET = 'project:get',
+  PROJECT_REMOVE = 'project:remove',
+  PROJECT_OPEN_FOLDER = 'project:openFolder',
+  PROJECT_GENERATE_UI = 'project:generateUi',
+  PROJECT_IMPROVE = 'project:improve',
+
   // App
   APP_GET_PATH = 'app:getPath',
+  APP_CONFIRM = 'app:confirm',
+  APP_CLIPBOARD_WRITE = 'app:clipboardWrite',
 
   // Files — request/response
   FILE_PICK = 'file:pick',
   FILE_SAVE_PICK = 'file:savePick',
   FILE_COPY = 'file:copy',
   FILE_SHOW_IN_FINDER = 'file:showInFinder',
+  FILE_OPEN = 'file:open',
+  FILE_GET_INFO = 'file:getInfo',
+
+  // Docker status push (main → renderer)
+  DOCKER_STATUS = 'docker:status',
 }
 
 // Re-export for convenience in handlers
@@ -177,10 +203,21 @@ export interface SchemaGenerateResponse {
   fromCache?: boolean;
 }
 
+export interface WindowConfig {
+  width: number;
+  height: number;
+  x?: number;
+  y?: number;
+}
+
 export interface AppConfig {
   anthropicApiKey?: string;
   /** Use mock LLM client (no API key needed, returns a basic schema) */
   mockMode?: boolean;
+  /** Set to true after the user completes first-run onboarding */
+  onboardingComplete?: boolean;
+  /** Last window position/size — managed by main process */
+  window?: WindowConfig;
 }
 
 export interface ConfigGetResponse {
@@ -191,6 +228,7 @@ export interface ConfigGetResponse {
 export interface ConfigSetRequest {
   anthropicApiKey?: string;
   mockMode?: boolean;
+  onboardingComplete?: boolean;
 }
 
 export interface ValidateKeyRequest {
@@ -206,4 +244,179 @@ export interface AnalysisProgressEvent {
   stage: 'detecting' | 'readme' | 'introspecting' | 'help' | 'generating-ui' | 'complete' | 'error';
   message: string;
   detail?: string;
+}
+
+export interface ExecAutofixRequest {
+  workflow: Workflow;
+  failedCommand: string;
+  errorOutput: string;
+}
+
+export interface ExecAutofixResponse {
+  ok: boolean;
+  template?: string;
+  explanation?: string;
+  error?: string;
+}
+
+export interface SchemaSaveRequest {
+  schema: UISchema;
+}
+
+export interface SchemaSaveResponse {
+  ok: boolean;
+  /** false = no cached entry matched the dockerImage (e.g. bundled example schema) */
+  saved: boolean;
+  error?: string;
+}
+
+// ── GitHub search ──────────────────────────────────────────────────────────
+
+export interface SearchResult {
+  owner: string;
+  repo: string;
+  fullName: string;
+  description: string;
+  stars: number;
+  language: string;
+  topics: string[];
+  lastUpdated: string; // ISO date string
+  license?: string;
+  htmlUrl: string;
+}
+
+export interface GithubSearchRequest {
+  query: string;
+}
+
+export interface GithubSearchResponse {
+  ok: boolean;
+  results?: SearchResult[];
+  error?: string;
+  rateLimited?: boolean;
+}
+
+// ── Project management ─────────────────────────────────────────────────────
+
+export type ProjectStatus = 'ready' | 'no-schema' | 'error';
+
+export interface ProjectMeta {
+  projectId: string;  // "{owner}--{repo}"
+  owner: string;
+  repo: string;
+  fullName: string;
+  description: string;
+  language: string;
+  stars: number;
+  installedAt: string;
+  dockerImage: string;
+  status: ProjectStatus;
+  error?: string;
+  repoDir: string;
+  /** Absolute path to schema.json, if generated */
+  schemaPath?: string;
+}
+
+export interface InstallProgressEvent {
+  projectId: string;
+  stage: 'cloning' | 'detecting' | 'building' | 'analyzing' | 'generating' | 'complete' | 'error';
+  message: string;
+}
+
+export interface ProjectInstallRequest {
+  owner: string;
+  repo: string;
+  searchResult: SearchResult;
+}
+
+export interface ProjectInstallResponse {
+  ok: boolean;
+  meta?: ProjectMeta;
+  error?: string;
+}
+
+export interface ProjectListResponse {
+  projects: ProjectMeta[];
+}
+
+export interface ProjectGetRequest {
+  projectId: string;
+}
+
+export interface ProjectGetResponse {
+  ok: boolean;
+  meta?: ProjectMeta;
+  schema?: UISchema;
+  error?: string;
+}
+
+export interface ProjectRemoveRequest {
+  projectId: string;
+}
+
+export interface ProjectGenerateUiRequest {
+  projectId: string;
+}
+
+export interface ProjectGenerateUiResponse {
+  ok: boolean;
+  schema?: UISchema;
+  error?: string;
+}
+
+export interface ProjectImproveRequest {
+  projectId: string;
+  feedback: string;
+  currentSchema: UISchema;
+}
+
+export interface ProjectImproveResponse {
+  ok: boolean;
+  schema?: UISchema;
+  error?: string;
+}
+
+// ── File info ──────────────────────────────────────────────────────────────────
+
+export type FileType = 'image' | 'video' | 'audio' | 'document' | 'data' | 'other';
+
+export interface FileInfo {
+  name: string;
+  path: string;
+  size: number;       // bytes
+  sizeLabel: string;  // e.g. "12.4 MB"
+  extension: string;
+  type: FileType;
+  previewable: boolean; // image or short text file
+}
+
+export interface FileGetInfoRequest {
+  filePath: string;
+}
+
+export interface FileGetInfoResponse {
+  ok: boolean;
+  info?: FileInfo;
+  error?: string;
+}
+
+// ── App utilities ─────────────────────────────────────────────────────────────
+
+export interface AppConfirmRequest {
+  title: string;
+  message: string;
+  detail?: string;
+  /** Label for the confirm button. Defaults to "OK". */
+  confirmLabel?: string;
+}
+
+export interface AppConfirmResponse {
+  confirmed: boolean;
+}
+
+// ── Docker status push ─────────────────────────────────────────────────────────
+
+export interface DockerStatusEvent {
+  running: boolean;
+  version?: string;
 }

@@ -25,6 +25,28 @@ import {
   type ValidateKeyRequest,
   type ValidateKeyResponse,
   type AnalysisProgressEvent,
+  type ExecAutofixRequest,
+  type ExecAutofixResponse,
+  type SchemaSaveRequest,
+  type SchemaSaveResponse,
+  type GithubSearchRequest,
+  type GithubSearchResponse,
+  type ProjectInstallRequest,
+  type ProjectInstallResponse,
+  type ProjectListResponse,
+  type ProjectGetRequest,
+  type ProjectGetResponse,
+  type ProjectRemoveRequest,
+  type ProjectGenerateUiRequest,
+  type ProjectGenerateUiResponse,
+  type ProjectImproveRequest,
+  type ProjectImproveResponse,
+  type FileGetInfoRequest,
+  type FileGetInfoResponse,
+  type AppConfirmRequest,
+  type AppConfirmResponse,
+  type DockerStatusEvent,
+  type InstallProgressEvent,
 } from '@gui-bridge/shared';
 
 // Type-safe API exposed to the renderer via contextBridge.
@@ -41,10 +63,12 @@ export interface ElectronAPI {
     run: (req: ExecRunRequest) => Promise<ExecRunResponse>;
     schemaRun: (req: ExecSchemaRunRequest) => Promise<ExecRunResponse>;
     cancel: () => Promise<void>;
+    autofix: (req: ExecAutofixRequest) => Promise<ExecAutofixResponse>;
   };
   schema: {
     load: (req: SchemaLoadRequest) => Promise<SchemaLoadResponse>;
     generate: (req: SchemaGenerateRequest) => Promise<SchemaGenerateResponse>;
+    save: (req: SchemaSaveRequest) => Promise<SchemaSaveResponse>;
   };
   analyzer: {
     run: (req: AnalyzerRunRequest) => Promise<AnalyzerRunResponse>;
@@ -59,11 +83,34 @@ export interface ElectronAPI {
     savePick: (req: FileSavePickRequest) => Promise<FileSavePickResponse>;
     copy: (req: FileCopyRequest) => Promise<void>;
     showInFinder: (filePath: string) => Promise<void>;
+    open: (filePath: string) => Promise<void>;
+    getInfo: (req: FileGetInfoRequest) => Promise<FileGetInfoResponse>;
+  };
+  dialog: {
+    confirm: (req: AppConfirmRequest) => Promise<AppConfirmResponse>;
+  };
+  clipboard: {
+    write: (text: string) => Promise<void>;
+  };
+  github: {
+    search: (req: GithubSearchRequest) => Promise<GithubSearchResponse>;
+  };
+  projects: {
+    install: (req: ProjectInstallRequest) => Promise<ProjectInstallResponse>;
+    list: () => Promise<ProjectListResponse>;
+    get: (req: ProjectGetRequest) => Promise<ProjectGetResponse>;
+    remove: (req: ProjectRemoveRequest) => Promise<{ ok: boolean; error?: string }>;
+    openFolder: (projectId: string) => Promise<void>;
+    generateUi: (req: ProjectGenerateUiRequest) => Promise<ProjectGenerateUiResponse>;
+    improve: (req: ProjectImproveRequest) => Promise<ProjectImproveResponse>;
   };
   on: {
     log: (callback: (event: ExecLogEvent) => void) => () => void;
     complete: (callback: (event: ExecCompleteEvent) => void) => () => void;
     analysisProgress: (callback: (event: AnalysisProgressEvent) => void) => () => void;
+    installProgress: (callback: (event: InstallProgressEvent) => void) => () => void;
+    dockerStatus: (callback: (event: DockerStatusEvent) => void) => () => void;
+    menuAction: (callback: (action: string) => void) => () => void;
   };
 }
 
@@ -87,6 +134,8 @@ const api: ElectronAPI = {
       ipcRenderer.invoke(IPCChannel.EXEC_SCHEMA_RUN, req),
     cancel: () =>
       ipcRenderer.invoke(IPCChannel.EXEC_CANCEL),
+    autofix: (req: ExecAutofixRequest) =>
+      ipcRenderer.invoke(IPCChannel.EXEC_AUTOFIX, req),
   },
 
   schema: {
@@ -94,6 +143,8 @@ const api: ElectronAPI = {
       ipcRenderer.invoke(IPCChannel.SCHEMA_LOAD, req),
     generate: (req: SchemaGenerateRequest) =>
       ipcRenderer.invoke(IPCChannel.SCHEMA_GENERATE, req),
+    save: (req: SchemaSaveRequest) =>
+      ipcRenderer.invoke(IPCChannel.SCHEMA_SAVE, req),
   },
 
   analyzer: {
@@ -120,13 +171,48 @@ const api: ElectronAPI = {
 
     showInFinder: (filePath: string) =>
       ipcRenderer.invoke(IPCChannel.FILE_SHOW_IN_FINDER, filePath),
+    open: (filePath: string) =>
+      ipcRenderer.invoke(IPCChannel.FILE_OPEN, filePath),
+    getInfo: (req: FileGetInfoRequest) =>
+      ipcRenderer.invoke(IPCChannel.FILE_GET_INFO, req),
+  },
+
+  dialog: {
+    confirm: (req: AppConfirmRequest) =>
+      ipcRenderer.invoke(IPCChannel.APP_CONFIRM, req),
+  },
+
+  clipboard: {
+    write: (text: string) =>
+      ipcRenderer.invoke(IPCChannel.APP_CLIPBOARD_WRITE, text),
+  },
+
+  github: {
+    search: (req: GithubSearchRequest) =>
+      ipcRenderer.invoke(IPCChannel.GITHUB_SEARCH, req),
+  },
+
+  projects: {
+    install: (req: ProjectInstallRequest) =>
+      ipcRenderer.invoke(IPCChannel.PROJECT_INSTALL, req),
+    list: () =>
+      ipcRenderer.invoke(IPCChannel.PROJECT_LIST),
+    get: (req: ProjectGetRequest) =>
+      ipcRenderer.invoke(IPCChannel.PROJECT_GET, req),
+    remove: (req: ProjectRemoveRequest) =>
+      ipcRenderer.invoke(IPCChannel.PROJECT_REMOVE, req),
+    openFolder: (projectId: string) =>
+      ipcRenderer.invoke(IPCChannel.PROJECT_OPEN_FOLDER, projectId),
+    generateUi: (req: ProjectGenerateUiRequest) =>
+      ipcRenderer.invoke(IPCChannel.PROJECT_GENERATE_UI, req),
+    improve: (req: ProjectImproveRequest) =>
+      ipcRenderer.invoke(IPCChannel.PROJECT_IMPROVE, req),
   },
 
   on: {
     log: (callback: (event: ExecLogEvent) => void) => {
       const listener = (_: Electron.IpcRendererEvent, event: ExecLogEvent) => callback(event);
       ipcRenderer.on(IPCChannel.EXEC_LOG, listener);
-      // Return cleanup function
       return () => ipcRenderer.removeListener(IPCChannel.EXEC_LOG, listener);
     },
 
@@ -140,6 +226,28 @@ const api: ElectronAPI = {
       const listener = (_: Electron.IpcRendererEvent, event: AnalysisProgressEvent) => callback(event);
       ipcRenderer.on(IPCChannel.ANALYSIS_PROGRESS, listener);
       return () => ipcRenderer.removeListener(IPCChannel.ANALYSIS_PROGRESS, listener);
+    },
+
+    installProgress: (callback: (event: InstallProgressEvent) => void) => {
+      const listener = (_: Electron.IpcRendererEvent, event: InstallProgressEvent) => callback(event);
+      ipcRenderer.on(IPCChannel.PROJECT_INSTALL_PROGRESS, listener);
+      return () => ipcRenderer.removeListener(IPCChannel.PROJECT_INSTALL_PROGRESS, listener);
+    },
+
+    dockerStatus: (callback: (event: DockerStatusEvent) => void) => {
+      const listener = (_: Electron.IpcRendererEvent, event: DockerStatusEvent) => callback(event);
+      ipcRenderer.on(IPCChannel.DOCKER_STATUS, listener);
+      return () => ipcRenderer.removeListener(IPCChannel.DOCKER_STATUS, listener);
+    },
+
+    menuAction: (callback: (action: string) => void) => {
+      const actions = ['menu:openSettings', 'menu:newProject', 'menu:toggleLogs'];
+      const listeners = actions.map((channel) => {
+        const listener = () => callback(channel);
+        ipcRenderer.on(channel, listener);
+        return { channel, listener };
+      });
+      return () => listeners.forEach(({ channel, listener }) => ipcRenderer.removeListener(channel, listener));
     },
   },
 };

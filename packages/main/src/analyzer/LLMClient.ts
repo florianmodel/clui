@@ -18,6 +18,7 @@ export class LLMClient implements ILLMClient {
   private client: Anthropic;
   private validator = new SchemaValidator();
   private static readonly MODEL = 'claude-haiku-4-5-20251001';
+  private static readonly MAX_TOKENS = 8192;
 
   constructor(apiKey: string) {
     this.client = new Anthropic({ apiKey });
@@ -26,7 +27,7 @@ export class LLMClient implements ILLMClient {
   async generateUISchema(dump: CapabilityDump, dockerImage: string): Promise<UISchema> {
     const response = await this.client.messages.create({
       model: LLMClient.MODEL,
-      max_tokens: 4096,
+      max_tokens: LLMClient.MAX_TOKENS,
       messages: [{ role: 'user', content: buildSchemaGenerationPrompt(dump, dockerImage) }],
     });
 
@@ -46,7 +47,7 @@ export class LLMClient implements ILLMClient {
   ): Promise<UISchema> {
     const response = await this.client.messages.create({
       model: LLMClient.MODEL,
-      max_tokens: 4096,
+      max_tokens: LLMClient.MAX_TOKENS,
       messages: [{ role: 'user', content: buildRefinementPrompt(currentSchema, dump, feedback) }],
     });
 
@@ -59,6 +60,23 @@ export class LLMClient implements ILLMClient {
     // Ensure dockerImage is preserved
     refined.dockerImage = dockerImage;
     return refined;
+  }
+
+  /**
+   * Send a raw prompt and return the response text as-is.
+   * Used for autofix (returns simple JSON, not a UISchema).
+   */
+  async rawComplete(prompt: string): Promise<string> {
+    const response = await this.client.messages.create({
+      model: LLMClient.MODEL,
+      max_tokens: 256,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    return response.content
+      .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+      .map((block) => block.text)
+      .join('');
   }
 
   /** Validate the API key by making a minimal API call. */
