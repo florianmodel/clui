@@ -65,7 +65,7 @@ I'll give you a CapabilityDump — a structured analysis of a CLI tool including
 - **CRITICAL: Every {placeholder} in the command MUST exactly match a step's "id" field.** Never invent names. If a step has id "video_url", write {video_url} in the command — NOT {url_arg} or {url_flag}.
 - For toggle steps: write {step_id} in the command. It expands to --step-id when enabled and is omitted when disabled.
 - For **single** file_input steps: write /input/{step_id} in the command (expands to /input/filename at runtime).
-- For **multiple** file_input steps (`"multiple": true`): do NOT use /input/{step_id} — that would be a file path, not a directory. Instead iterate /input/ directly in the command. Examples: `for f in /input/*.pdf`, `os.listdir('/input')`, `cat /input/*`. The {step_id} placeholder must NOT appear inside a path for multi-file inputs.
+- For **multiple** file_input steps ("multiple": true): do NOT use /input/{step_id} — that would be a file path, not a directory. Instead iterate /input/ directly in the command. Examples: 'for f in /input/*.pdf', 'os.listdir("/input")', 'cat /input/*'. The {step_id} placeholder must NOT appear inside a path for multi-file inputs.
 - For output paths: write /output/{output_step_id} or a fixed pattern like -o /output/%(title)s.%(ext)s
 - The projectId should be the tool's common name in kebab-case (e.g. "yt-dlp", "black").
 - The dockerImage field must be exactly: "${dockerImage}"
