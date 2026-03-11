@@ -3,6 +3,7 @@ import type { Workflow, UISchema, ExecCompleteEvent, ExecLogEvent } from '@gui-b
 import { useLogEvents, useCompleteEvent } from '../../hooks/useIPC.js';
 import { StepRenderer } from './StepRenderer.js';
 import { CommandPreview } from './CommandPreview.js';
+import { FileCard } from '../OutputPanel/FileCard.js';
 
 interface Props {
   workflow: Workflow;
@@ -67,6 +68,30 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
 
   // Accumulated error output for the auto-fix request — use a ref to avoid re-renders
   const errorOutputRef = useRef('');
+
+  // Execution timer
+  const [elapsed, setElapsed] = useState(0);
+  const startedAtRef = useRef<number | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (runStatus === 'running') {
+      startedAtRef.current = Date.now();
+      setElapsed(0);
+      timerRef.current = setInterval(() => {
+        setElapsed(Math.floor((Date.now() - (startedAtRef.current ?? Date.now())) / 1000));
+      }, 1000);
+    } else {
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    }
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [runStatus]);
+
+  function formatElapsed(s: number): string {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+  }
 
   // Load desktop path as default output dir once on mount
   useEffect(() => {
@@ -347,9 +372,9 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
           {(fixStatus === 'rerunning') && '⏳ Re-running with fix…'}
           {(fixStatus !== 'thinking' && fixStatus !== 'rerunning') && (
             <>
-              {busy && '⏳ Running…'}
+              {busy && `⏳ Running… ${formatElapsed(elapsed)}`}
               {!busy && runStatus === 'idle' && '▶ Run'}
-              {!busy && runStatus === 'done' && '✓ Done — Run Again'}
+              {!busy && runStatus === 'done' && `✓ Done (${formatElapsed(elapsed)}) — Run Again`}
               {!busy && runStatus === 'error' && '✗ Error — Retry'}
             </>
           )}
@@ -435,17 +460,17 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
         <div style={styles.outputSection}>
           <div style={styles.outputTitle}>Output files</div>
           {outputFiles.map((f) => (
-            <div key={f} style={styles.outputFile}>
-              <span style={styles.outputFileName}>{f.split('/').pop()}</span>
-              <button
-                type="button"
-                style={styles.openBtn}
-                onClick={() => window.electronAPI.files.showInFinder(f)}
-              >
-                Show in Finder
-              </button>
-            </div>
+            <FileCard key={f} filePath={f} />
           ))}
+          {outputFiles.length > 1 && (
+            <button
+              type="button"
+              style={styles.openFolderBtn}
+              onClick={() => window.electronAPI.files.showInFinder(outputFiles[0])}
+            >
+              Open Output Folder
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -551,20 +576,14 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12, color: 'var(--text-muted)',
     fontStyle: 'italic', textAlign: 'center',
   },
-  outputSection: {
-    display: 'flex', flexDirection: 'column', gap: 8,
-    padding: '12px 16px', background: 'var(--surface-2)',
-    borderRadius: 8, border: '1px solid var(--border)',
-  },
+  outputSection: { display: 'flex', flexDirection: 'column', gap: 8 },
   outputTitle: {
     fontSize: 12, fontWeight: 600, letterSpacing: '0.05em',
-    textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 4,
+    textTransform: 'uppercase', color: 'var(--text-muted)',
   },
-  outputFile: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
-  outputFileName: { fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--green)' },
-  openBtn: {
+  openFolderBtn: {
     background: 'transparent', border: '1px solid var(--border)',
-    borderRadius: 6, color: 'var(--text-muted)', fontSize: 12,
-    padding: '3px 10px', cursor: 'pointer',
+    borderRadius: 8, color: 'var(--text-muted)', fontSize: 12,
+    padding: '7px 14px', cursor: 'pointer', textAlign: 'center',
   },
 };

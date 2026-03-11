@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, shell, dialog, app } from 'electron';
+import { ipcMain, BrowserWindow, shell, dialog, app, clipboard } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -44,6 +44,12 @@ import {
   type ProjectGenerateUiResponse,
   type ProjectImproveRequest,
   type ProjectImproveResponse,
+  type FileGetInfoRequest,
+  type FileGetInfoResponse,
+  type FileInfo,
+  type FileType,
+  type AppConfirmRequest,
+  type AppConfirmResponse,
   type InstallProgressEvent,
 } from '@gui-bridge/shared';
 
@@ -61,6 +67,23 @@ const docker = new DockerManager();
 const configManager = new ConfigManager();
 const schemaCache = new SchemaCache();
 const githubClient = new GitHubClient();
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+function categorizeFile(ext: string): FileType {
+  if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico'].includes(ext)) return 'image';
+  if (['.mp4', '.avi', '.mov', '.mkv', '.webm', '.m4v'].includes(ext)) return 'video';
+  if (['.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a'].includes(ext)) return 'audio';
+  if (['.pdf', '.doc', '.docx', '.txt', '.md', '.rtf'].includes(ext)) return 'document';
+  if (['.json', '.csv', '.tsv', '.xml', '.yaml', '.yml'].includes(ext)) return 'data';
+  if (['.js', '.ts', '.py', '.rb', '.go', '.rs', '.sh'].includes(ext)) return 'data';
+  return 'other';
+}
 
 /** Resolve a path that may be relative (from renderer) to an absolute host path. */
 function resolveAppPath(p: string): string {
@@ -579,6 +602,62 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle(IPCChannel.PROJECT_OPEN_FOLDER, (_event, projectId: string): void => {
     const folderPath = projectManager.openFolder(projectId);
     if (folderPath) shell.openPath(folderPath);
+  });
+
+  // ── file:open ──────────────────────────────────────────────────────────
+  ipcMain.handle(IPCChannel.FILE_OPEN, async (_event, filePath: string): Promise<void> => {
+    await shell.openPath(filePath);
+  });
+
+  // ── file:getInfo ───────────────────────────────────────────────────────
+  ipcMain.handle(
+    IPCChannel.FILE_GET_INFO,
+    (_event, req: FileGetInfoRequest): FileGetInfoResponse => {
+      try {
+        const stats = fs.statSync(req.filePath);
+        const ext = path.extname(req.filePath).toLowerCase();
+        const type = categorizeFile(ext);
+        const previewable = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'].includes(ext);
+        return {
+          ok: true,
+          info: {
+            name: path.basename(req.filePath),
+            path: req.filePath,
+            size: stats.size,
+            sizeLabel: formatFileSize(stats.size),
+            extension: ext,
+            type,
+            previewable,
+          } satisfies FileInfo,
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, error: msg };
+      }
+    },
+  );
+
+  // ── app:confirm ────────────────────────────────────────────────────────
+  ipcMain.handle(
+    IPCChannel.APP_CONFIRM,
+    async (_event, req: AppConfirmRequest): Promise<AppConfirmResponse> => {
+      const win = getWindow();
+      const result = await dialog.showMessageBox(win ?? new BrowserWindow(), {
+        type: 'question',
+        buttons: [req.confirmLabel ?? 'Confirm', 'Cancel'],
+        defaultId: 0,
+        cancelId: 1,
+        title: req.title,
+        message: req.message,
+        detail: req.detail,
+      });
+      return { confirmed: result.response === 0 };
+    },
+  );
+
+  // ── app:clipboardWrite ─────────────────────────────────────────────────
+  ipcMain.handle(IPCChannel.APP_CLIPBOARD_WRITE, (_event, text: string): void => {
+    clipboard.writeText(text);
   });
 
   // ── project:improve ────────────────────────────────────────────────────

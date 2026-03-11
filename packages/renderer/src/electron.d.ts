@@ -42,6 +42,11 @@ import type {
   ProjectGenerateUiResponse,
   ProjectImproveRequest,
   ProjectImproveResponse,
+  FileGetInfoRequest,
+  FileGetInfoResponse,
+  AppConfirmRequest,
+  AppConfirmResponse,
+  DockerStatusEvent,
   InstallProgressEvent,
 } from '@gui-bridge/shared';
 
@@ -79,6 +84,14 @@ declare global {
         savePick: (req: FileSavePickRequest) => Promise<FileSavePickResponse>;
         copy: (req: FileCopyRequest) => Promise<void>;
         showInFinder: (filePath: string) => Promise<void>;
+        open: (filePath: string) => Promise<void>;
+        getInfo: (req: FileGetInfoRequest) => Promise<FileGetInfoResponse>;
+      };
+      dialog: {
+        confirm: (req: AppConfirmRequest) => Promise<AppConfirmResponse>;
+      };
+      clipboard: {
+        write: (text: string) => Promise<void>;
       };
       github: {
         search: (req: GithubSearchRequest) => Promise<GithubSearchResponse>;
@@ -97,6 +110,8 @@ declare global {
         complete: (callback: (event: ExecCompleteEvent) => void) => () => void;
         analysisProgress: (callback: (event: AnalysisProgressEvent) => void) => () => void;
         installProgress: (callback: (event: InstallProgressEvent) => void) => () => void;
+        dockerStatus: (callback: (event: DockerStatusEvent) => void) => () => void;
+        menuAction: (callback: (action: string) => void) => () => void;
       };
     };
   }

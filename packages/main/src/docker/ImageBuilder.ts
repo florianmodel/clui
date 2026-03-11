@@ -18,7 +18,7 @@ export class ImageBuilder {
     stack: StackInfo,
     onLog: (line: string) => void,
   ): Promise<string> {
-    const imageTag = `gui-bridge-${projectId}`;
+    const imageTag = `gui-bridge-${projectId}`.toLowerCase();
 
     const existingDockerfile = path.join(repoDir, 'Dockerfile');
     let dockerfilePath: string;

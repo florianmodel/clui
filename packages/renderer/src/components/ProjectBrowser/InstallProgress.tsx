@@ -31,6 +31,11 @@ export function InstallProgress({ projectName, events }: Props) {
     STAGES.forEach((s) => completedStages.add(s.key));
   }
 
+  // Collect all build-stage log lines for error display
+  const buildLogs = events
+    .filter((e) => e.stage === 'building' || e.stage === 'cloning')
+    .map((e) => e.message);
+
   return (
     <div style={styles.container}>
       <div style={styles.title}>Installing {projectName}</div>
@@ -44,12 +49,12 @@ export function InstallProgress({ projectName, events }: Props) {
           return (
             <div key={s.key} style={styles.stepRow}>
               <span style={styles.stepIcon}>
-                {done ? '✅' : active ? '⏳' : '○'}
+                {isError && active ? '✗' : done ? '✅' : active ? '⏳' : '○'}
               </span>
               <span
                 style={{
                   ...styles.stepLabel,
-                  color: done || active ? 'var(--text)' : 'var(--text-muted)',
+                  color: isError && active ? 'var(--red)' : done || active ? 'var(--text)' : 'var(--text-muted)',
                   fontWeight: active ? 600 : 400,
                   opacity: pending ? 0.5 : 1,
                 }}
@@ -72,6 +77,15 @@ export function InstallProgress({ projectName, events }: Props) {
         {isError && (
           <div style={styles.errorBox}>
             <span style={styles.errorTitle}>Installation failed</span>
+            {buildLogs.length > 0 && (
+              <div style={styles.errorLog}>
+                {buildLogs.slice(-40).map((line, i) => (
+                  <div key={i} style={{ color: line.startsWith('ERROR') || line.includes('error') ? '#f87171' : 'inherit' }}>
+                    {line}
+                  </div>
+                ))}
+              </div>
+            )}
             <span style={styles.errorMsg}>{lastEvent?.message}</span>
           </div>
         )}
@@ -110,5 +124,13 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 8,
   },
   errorTitle: { fontSize: 13, fontWeight: 700, color: 'var(--red)' },
-  errorMsg: { fontSize: 12, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' },
+  errorLog: {
+    maxHeight: 200, overflowY: 'auto' as const,
+    fontFamily: 'var(--font-mono)', fontSize: 11,
+    color: 'var(--text-muted)', lineHeight: 1.5,
+    background: 'var(--surface)', borderRadius: 4,
+    padding: '6px 8px', whiteSpace: 'pre-wrap' as const,
+    wordBreak: 'break-all' as const,
+  },
+  errorMsg: { fontSize: 12, color: 'var(--red)', fontFamily: 'var(--font-mono)', fontWeight: 600 },
 };

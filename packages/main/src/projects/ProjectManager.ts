@@ -41,7 +41,7 @@ export class ProjectManager {
     onProgress: (event: InstallProgressEvent) => void,
   ): Promise<ProjectMeta> {
     const projectId = `${owner}--${repo}`;
-    const imageTag = `gui-bridge-${projectId}`;
+    const imageTag = `gui-bridge-${projectId}`.toLowerCase();
 
     const send = (
       stage: InstallProgressEvent['stage'],
@@ -124,7 +124,7 @@ export class ProjectManager {
         language: searchResult.language,
         stars: searchResult.stars,
         installedAt: new Date().toISOString(),
-        dockerImage: `gui-bridge-${projectId}`,
+        dockerImage: `gui-bridge-${projectId}`.toLowerCase(),
         status: 'error',
         error: msg,
         repoDir: this.cloner.getProjectDir(projectId) + '/repo',

@@ -28,6 +28,26 @@ export function ProjectLibrary({
   const [hoveredId, setHoveredId] = React.useState<string | null>(null);
   const [menuFor, setMenuFor] = React.useState<string | null>(null);
 
+  async function handleUninstall(projectId: string, repoName: string) {
+    setMenuFor(null);
+    const res = await window.electronAPI.dialog.confirm({
+      title: 'Uninstall Tool',
+      message: `Remove ${repoName}? This will delete the Docker image and all project files.`,
+      confirmLabel: 'Uninstall',
+    });
+    if (res.confirmed) onUninstall(projectId);
+  }
+
+  async function handleRegenerateUi(projectId: string, repoName: string) {
+    setMenuFor(null);
+    const res = await window.electronAPI.dialog.confirm({
+      title: 'Regenerate UI',
+      message: `Regenerate the UI for ${repoName}? This will overwrite the current schema.`,
+      confirmLabel: 'Regenerate',
+    });
+    if (res.confirmed) onGenerateUi(projectId);
+  }
+
   const isActive = (type: MainView['type']) => view.type === type;
 
   return (
@@ -102,10 +122,15 @@ export function ProjectLibrary({
                       ✨ Generate UI
                     </button>
                   )}
+                  {p.status === 'ready' && (
+                    <button type="button" style={styles.menuItem} onClick={() => handleRegenerateUi(p.projectId, p.repo)}>
+                      ✨ Regenerate UI
+                    </button>
+                  )}
                   <button type="button" style={styles.menuItem} onClick={() => { onOpenFolder(p.projectId); setMenuFor(null); }}>
                     📁 Open Folder
                   </button>
-                  <button type="button" style={{ ...styles.menuItem, color: 'var(--red)' }} onClick={() => { onUninstall(p.projectId); setMenuFor(null); }}>
+                  <button type="button" style={{ ...styles.menuItem, color: 'var(--red)' }} onClick={() => handleUninstall(p.projectId, p.repo)}>
                     🗑 Uninstall
                   </button>
                 </div>

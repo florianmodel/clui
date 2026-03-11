@@ -55,12 +55,19 @@ export enum IPCChannel {
 
   // App
   APP_GET_PATH = 'app:getPath',
+  APP_CONFIRM = 'app:confirm',
+  APP_CLIPBOARD_WRITE = 'app:clipboardWrite',
 
   // Files — request/response
   FILE_PICK = 'file:pick',
   FILE_SAVE_PICK = 'file:savePick',
   FILE_COPY = 'file:copy',
   FILE_SHOW_IN_FINDER = 'file:showInFinder',
+  FILE_OPEN = 'file:open',
+  FILE_GET_INFO = 'file:getInfo',
+
+  // Docker status push (main → renderer)
+  DOCKER_STATUS = 'docker:status',
 }
 
 // Re-export for convenience in handlers
@@ -196,10 +203,21 @@ export interface SchemaGenerateResponse {
   fromCache?: boolean;
 }
 
+export interface WindowConfig {
+  width: number;
+  height: number;
+  x?: number;
+  y?: number;
+}
+
 export interface AppConfig {
   anthropicApiKey?: string;
   /** Use mock LLM client (no API key needed, returns a basic schema) */
   mockMode?: boolean;
+  /** Set to true after the user completes first-run onboarding */
+  onboardingComplete?: boolean;
+  /** Last window position/size — managed by main process */
+  window?: WindowConfig;
 }
 
 export interface ConfigGetResponse {
@@ -210,6 +228,7 @@ export interface ConfigGetResponse {
 export interface ConfigSetRequest {
   anthropicApiKey?: string;
   mockMode?: boolean;
+  onboardingComplete?: boolean;
 }
 
 export interface ValidateKeyRequest {
@@ -355,4 +374,49 @@ export interface ProjectImproveResponse {
   ok: boolean;
   schema?: UISchema;
   error?: string;
+}
+
+// ── File info ──────────────────────────────────────────────────────────────────
+
+export type FileType = 'image' | 'video' | 'audio' | 'document' | 'data' | 'other';
+
+export interface FileInfo {
+  name: string;
+  path: string;
+  size: number;       // bytes
+  sizeLabel: string;  // e.g. "12.4 MB"
+  extension: string;
+  type: FileType;
+  previewable: boolean; // image or short text file
+}
+
+export interface FileGetInfoRequest {
+  filePath: string;
+}
+
+export interface FileGetInfoResponse {
+  ok: boolean;
+  info?: FileInfo;
+  error?: string;
+}
+
+// ── App utilities ─────────────────────────────────────────────────────────────
+
+export interface AppConfirmRequest {
+  title: string;
+  message: string;
+  detail?: string;
+  /** Label for the confirm button. Defaults to "OK". */
+  confirmLabel?: string;
+}
+
+export interface AppConfirmResponse {
+  confirmed: boolean;
+}
+
+// ── Docker status push ─────────────────────────────────────────────────────────
+
+export interface DockerStatusEvent {
+  running: boolean;
+  version?: string;
 }

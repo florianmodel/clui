@@ -18,6 +18,7 @@ import { SchemaReview } from './components/SchemaReview/SchemaReview.js';
 import { ProjectBrowser, InstallProgress } from './components/ProjectBrowser/index.js';
 import { ProjectLibrary } from './components/ProjectLibrary/index.js';
 import { Settings } from './components/Settings/index.js';
+import { Onboarding } from './components/Onboarding/Onboarding.js';
 
 // ── View state machine ────────────────────────────────────────────────────────
 
@@ -64,6 +65,11 @@ export function App() {
   // ── API key modal ────────────────────────────────────────────────────
   const [showApiKeySetup, setShowApiKeySetup] = useState(false);
 
+  // ── Onboarding + connectivity ─────────────────────────────────────────
+  const [onboardingDone, setOnboardingDone] = useState<boolean | null>(null);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [showLogs, setShowLogs] = useState(true);
+
   // ── Log handlers ──────────────────────────────────────────────────────
   const handleLog = useCallback((event: ExecLogEvent) => {
     setLogs((prev) => [...prev, event]);
@@ -75,7 +81,10 @@ export function App() {
 
   // ── Init ──────────────────────────────────────────────────────────────
   useEffect(() => {
-    // Docker health check
+    // Check onboarding status + initial docker health
+    window.electronAPI.config.get().then((configRes) => {
+      setOnboardingDone(configRes.config.onboardingComplete === true);
+    });
     window.electronAPI.docker.checkHealth().then((res) => {
       setDockerStatus(res.ok ? 'ok' : 'error');
     });
@@ -83,8 +92,13 @@ export function App() {
     // Load installed projects
     refreshProjects();
 
-    // Listen for install progress events
-    const cleanup = window.electronAPI.on.installProgress((event) => {
+    // Live docker status updates from health monitor
+    const cleanupDocker = window.electronAPI.on.dockerStatus((event) => {
+      setDockerStatus(event.running ? 'ok' : 'error');
+    });
+
+    // Install progress events
+    const cleanupInstall = window.electronAPI.on.installProgress((event) => {
       setInstallEvents((prev) => [...prev, event]);
       if (event.stage === 'complete' || event.stage === 'error') {
         setInstallComplete(true);
@@ -92,7 +106,41 @@ export function App() {
       }
     });
 
-    return cleanup;
+    // Menu bar actions
+    const cleanupMenu = window.electronAPI.on.menuAction((action) => {
+      if (action === 'menu:openSettings') setView({ type: 'settings' });
+      else if (action === 'menu:newProject') setView({ type: 'browser' });
+      else if (action === 'menu:toggleLogs') setShowLogs((prev) => !prev);
+    });
+
+    return () => {
+      cleanupDocker();
+      cleanupInstall();
+      cleanupMenu();
+    };
+  }, []);
+
+  // ── Online/offline detection ───────────────────────────────────────────
+  useEffect(() => {
+    const onOnline = () => setIsOnline(true);
+    const onOffline = () => setIsOnline(false);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
+
+  // ── Keyboard shortcuts ────────────────────────────────────────────────
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (!e.metaKey) return;
+      if (e.key === 'k') { e.preventDefault(); setView({ type: 'browser' }); }
+      if (e.key === ',') { e.preventDefault(); setView({ type: 'settings' }); }
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
   function refreshProjects() {
@@ -392,8 +440,19 @@ export function App() {
     }
   }
 
+  // Show nothing until onboarding state is resolved
+  if (onboardingDone === null) return null;
+
   return (
     <div style={styles.root}>
+      {/* Onboarding overlay */}
+      {!onboardingDone && (
+        <Onboarding
+          onComplete={() => setOnboardingDone(true)}
+          onInstall={(result) => { setOnboardingDone(true); handleInstall(result); }}
+        />
+      )}
+
       {/* API Key Setup modal */}
       {showApiKeySetup && <ApiKeySetup onSaved={handleApiKeySaved} />}
 
@@ -406,7 +465,23 @@ export function App() {
           {dockerStatus === 'ok' && 'Docker ready'}
           {dockerStatus === 'error' && 'Docker not running'}
         </span>
+        <div style={{ flex: 1 }} />
+        <button
+          type="button"
+          style={{ ...styles.topBarBtn, ...(showLogs ? styles.topBarBtnActive : {}) }}
+          onClick={() => setShowLogs((v) => !v)}
+          title="Toggle Output Panel (⌘L)"
+        >
+          Output
+        </button>
       </div>
+
+      {/* Offline banner */}
+      {!isOnline && (
+        <div style={styles.offlineBanner}>
+          No internet connection — GitHub search and AI features unavailable
+        </div>
+      )}
 
       {/* Three-column layout: sidebar | main | logs */}
       <div style={styles.layout}>
@@ -425,10 +500,12 @@ export function App() {
           {renderMain()}
         </div>
 
-        {/* Log panel */}
-        <div style={styles.logPanel}>
-          <LogPanel logs={logs} onClear={handleClearLogs} />
-        </div>
+        {/* Log panel (toggleable) */}
+        {showLogs && (
+          <div style={styles.logPanel}>
+            <LogPanel logs={logs} onClear={handleClearLogs} />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -455,6 +532,20 @@ const styles: Record<string, React.CSSProperties> = {
     marginRight: 4,
   },
   dockerLabel: { fontSize: 11, color: 'var(--text-muted)' },
+  topBarBtn: {
+    background: 'transparent', border: '1px solid var(--border)',
+    borderRadius: 5, color: 'var(--text-muted)', fontSize: 11,
+    padding: '2px 8px', cursor: 'pointer',
+  },
+  topBarBtnActive: {
+    borderColor: 'rgba(167,139,250,0.5)', color: '#a78bfa',
+    background: 'rgba(167,139,250,0.08)',
+  },
+  offlineBanner: {
+    background: 'rgba(251,191,36,0.12)', borderBottom: '1px solid rgba(251,191,36,0.3)',
+    color: '#fbbf24', fontSize: 11, textAlign: 'center' as const,
+    padding: '5px 16px', flexShrink: 0,
+  },
   layout: { display: 'flex', flex: 1, overflow: 'hidden' },
   main: {
     flex: 1, overflowY: 'auto', padding: 16,

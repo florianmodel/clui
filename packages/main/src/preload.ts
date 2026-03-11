@@ -41,6 +41,11 @@ import {
   type ProjectGenerateUiResponse,
   type ProjectImproveRequest,
   type ProjectImproveResponse,
+  type FileGetInfoRequest,
+  type FileGetInfoResponse,
+  type AppConfirmRequest,
+  type AppConfirmResponse,
+  type DockerStatusEvent,
   type InstallProgressEvent,
 } from '@gui-bridge/shared';
 
@@ -78,6 +83,14 @@ export interface ElectronAPI {
     savePick: (req: FileSavePickRequest) => Promise<FileSavePickResponse>;
     copy: (req: FileCopyRequest) => Promise<void>;
     showInFinder: (filePath: string) => Promise<void>;
+    open: (filePath: string) => Promise<void>;
+    getInfo: (req: FileGetInfoRequest) => Promise<FileGetInfoResponse>;
+  };
+  dialog: {
+    confirm: (req: AppConfirmRequest) => Promise<AppConfirmResponse>;
+  };
+  clipboard: {
+    write: (text: string) => Promise<void>;
   };
   github: {
     search: (req: GithubSearchRequest) => Promise<GithubSearchResponse>;
@@ -96,6 +109,8 @@ export interface ElectronAPI {
     complete: (callback: (event: ExecCompleteEvent) => void) => () => void;
     analysisProgress: (callback: (event: AnalysisProgressEvent) => void) => () => void;
     installProgress: (callback: (event: InstallProgressEvent) => void) => () => void;
+    dockerStatus: (callback: (event: DockerStatusEvent) => void) => () => void;
+    menuAction: (callback: (action: string) => void) => () => void;
   };
 }
 
@@ -156,6 +171,20 @@ const api: ElectronAPI = {
 
     showInFinder: (filePath: string) =>
       ipcRenderer.invoke(IPCChannel.FILE_SHOW_IN_FINDER, filePath),
+    open: (filePath: string) =>
+      ipcRenderer.invoke(IPCChannel.FILE_OPEN, filePath),
+    getInfo: (req: FileGetInfoRequest) =>
+      ipcRenderer.invoke(IPCChannel.FILE_GET_INFO, req),
+  },
+
+  dialog: {
+    confirm: (req: AppConfirmRequest) =>
+      ipcRenderer.invoke(IPCChannel.APP_CONFIRM, req),
+  },
+
+  clipboard: {
+    write: (text: string) =>
+      ipcRenderer.invoke(IPCChannel.APP_CLIPBOARD_WRITE, text),
   },
 
   github: {
@@ -203,6 +232,22 @@ const api: ElectronAPI = {
       const listener = (_: Electron.IpcRendererEvent, event: InstallProgressEvent) => callback(event);
       ipcRenderer.on(IPCChannel.PROJECT_INSTALL_PROGRESS, listener);
       return () => ipcRenderer.removeListener(IPCChannel.PROJECT_INSTALL_PROGRESS, listener);
+    },
+
+    dockerStatus: (callback: (event: DockerStatusEvent) => void) => {
+      const listener = (_: Electron.IpcRendererEvent, event: DockerStatusEvent) => callback(event);
+      ipcRenderer.on(IPCChannel.DOCKER_STATUS, listener);
+      return () => ipcRenderer.removeListener(IPCChannel.DOCKER_STATUS, listener);
+    },
+
+    menuAction: (callback: (action: string) => void) => {
+      const actions = ['menu:openSettings', 'menu:newProject', 'menu:toggleLogs'];
+      const listeners = actions.map((channel) => {
+        const listener = () => callback(channel);
+        ipcRenderer.on(channel, listener);
+        return { channel, listener };
+      });
+      return () => listeners.forEach(({ channel, listener }) => ipcRenderer.removeListener(channel, listener));
     },
   },
 };
