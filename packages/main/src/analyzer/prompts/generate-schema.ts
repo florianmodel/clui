@@ -65,7 +65,13 @@ I'll give you a CapabilityDump — a structured analysis of a CLI tool including
 - **CRITICAL: Every {placeholder} in the command MUST exactly match a step's "id" field.** Never invent names. If a step has id "video_url", write {video_url} in the command — NOT {url_arg} or {url_flag}.
 - For toggle steps: write {step_id} in the command. It expands to --step-id when enabled and is omitted when disabled.
 - For **single** file_input steps: write /input/{step_id} in the command (expands to /input/filename at runtime).
-- For **multiple** file_input steps ("multiple": true): do NOT use /input/{step_id} — that would be a file path, not a directory. Instead iterate /input/ directly in the command. Examples: 'for f in /input/*.pdf', 'os.listdir("/input")', 'cat /input/*'. The {step_id} placeholder must NOT appear inside a path for multi-file inputs.
+- For **multiple** file_input steps ("multiple": true): all selected files are mounted as flat files inside /input/. Iterate /input/ directly — do NOT reference {step_id} in any path.
+  WRONG: [process('/input/' + '{' + 'step_id' + '}') for f in os.listdir('/input')]  <- {step_id} becomes '' leaving /input/ as a directory
+  WRONG: os.listdir('/input/{step_id}')  <- {step_id} becomes filename, not a directory
+  RIGHT: [process('/input/' + f) for f in sorted(os.listdir('/input')) if f.lower().endswith('.pdf')]
+  RIGHT: for f in /input/*.pdf; do tool "$f" -o /output/; done
+  - In bash: ALWAYS quote path variables ("$f" not $f) to handle filenames with spaces
+  - For batch output where each input produces an output, derive output name from input filename: '/output/' + os.path.splitext(f)[0] + '.out' (do NOT hardcode a fixed name that gets overwritten each iteration)
 - For output paths: write /output/{output_step_id} or a fixed pattern like -o /output/%(title)s.%(ext)s
 - The projectId should be the tool's common name in kebab-case (e.g. "yt-dlp", "black").
 - The dockerImage field must be exactly: "${dockerImage}"

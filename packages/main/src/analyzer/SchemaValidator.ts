@@ -58,6 +58,15 @@ export class SchemaValidator {
         workflow.execute.command = this.repairCommand(workflow.execute.command, steps);
       }
 
+      // Warn about multi-file anti-patterns (LLM using /input/{step_id} for multiple steps)
+      for (const step of steps) {
+        if (step.type === 'file_input' && step.multiple) {
+          if (workflow.execute.command.includes(`/input/{${step.id}}`)) {
+            console.warn(`[SchemaValidator] Workflow "${workflow.id}" step "${step.id}" is multiple=true but command uses /input/{${step.id}} — this will produce IsADirectoryError at runtime. Regenerate UI to fix.`);
+          }
+        }
+      }
+
       // Validate individual steps
       for (const step of steps) {
         if (!step.id || !step.label || !step.type) {
@@ -84,7 +93,12 @@ export class SchemaValidator {
     for (const step of steps) {
       const flagName = '--' + step.id.replace(/_/g, '-');
       if (step.type === 'file_input') {
-        parts.push(`/input/{${step.id}}`);
+        if (step.multiple) {
+          // Multi-file: command must iterate /input/ directly — can't auto-repair loop structure
+          console.warn(`[SchemaValidator] repairCommand: skipping multi-file step "${step.id}" — command needs manual regeneration`);
+        } else {
+          parts.push(`/input/{${step.id}}`);
+        }
       } else if (step.type === 'toggle') {
         // Expands to --flag-name when true, stripped when false
         parts.push(`{${step.id}}`);
