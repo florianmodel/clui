@@ -14,10 +14,17 @@ export function buildCommand(workflow: Workflow, inputs: Record<string, unknown>
     const step = workflow.steps.find((s) => s.id === stepId);
 
     if (step?.type === 'file_input') {
-      // File inputs: only the filename is relevant (file is mounted at /input/)
-      const files = Array.isArray(value) ? value : [value];
-      const filename = path.basename(String(files[0]));
-      cmd = cmd.replaceAll(`{${stepId}}`, filename);
+      if (step.multiple) {
+        // Multiple files: all mounted as flat files inside /input/.
+        // The command should iterate /input/ directly — replace {step_id} with
+        // empty string so "/input/{step_id}" becomes "/input/".
+        cmd = cmd.replaceAll(`{${stepId}}`, '');
+      } else {
+        // Single file: mounted at /input/<basename>
+        const files = Array.isArray(value) ? value : [value];
+        const filename = path.basename(String(files[0]));
+        cmd = cmd.replaceAll(`{${stepId}}`, filename);
+      }
     } else if (step?.type === 'checkbox' || step?.type === 'toggle') {
       if (value) {
         // Replace {step_id} with --step-id flag when enabled
