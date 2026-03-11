@@ -13,14 +13,18 @@ const streamColor: Record<ExecLogEvent['stream'], string> = {
   system: 'var(--accent)',
 };
 
-function detectProgress(line: string): number | null {
+function parseTimecode(h: string, m: string, s: string): number {
+  return parseInt(h) * 3600 + parseInt(m) * 60 + parseFloat(s);
+}
+
+function detectSimpleProgress(line: string): number | null {
   const pctMatch = line.match(/(\d+(?:\.\d+)?)\s*%/);
   if (pctMatch) return Math.min(100, parseFloat(pctMatch[1]));
   const fracMatch = line.match(/(\d+)\s*(?:of|\/)\s*(\d+)/);
   if (fracMatch) {
     const num = parseInt(fracMatch[1]);
     const den = parseInt(fracMatch[2]);
-    if (den > 0) return Math.min(100, (num / den) * 100);
+    if (den > 0 && den >= num) return Math.min(100, (num / den) * 100);
   }
   return null;
 }
@@ -30,18 +34,41 @@ export function LogPanel({ logs, onClear }: Props) {
   const isAtBottomRef = useRef(true);
   const [progress, setProgress] = useState<number | null>(null);
   const { showToast } = useToast();
+  const durationRef = useRef<number | null>(null);
 
-  // Detect progress from latest log lines
+  // Detect progress — ffmpeg-aware, with fallback to simple patterns
   useEffect(() => {
+    // Try to extract ffmpeg total duration from early logs
+    if (durationRef.current === null) {
+      for (const log of logs) {
+        const m = log.line.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+        if (m) { durationRef.current = parseTimecode(m[1], m[2], m[3]); break; }
+      }
+    }
+    // If duration known, scan recent logs for ffmpeg time= progress
+    if (durationRef.current !== null && durationRef.current > 0) {
+      for (let i = logs.length - 1; i >= Math.max(0, logs.length - 10); i--) {
+        const m = logs[i].line.match(/time=(\d+):(\d+):(\d+(?:\.\d+)?)/);
+        if (m) {
+          const current = parseTimecode(m[1], m[2], m[3]);
+          setProgress(Math.min(100, (current / durationRef.current!) * 100));
+          return;
+        }
+      }
+    }
+    // Fallback: percentage or fraction patterns
     for (let i = logs.length - 1; i >= Math.max(0, logs.length - 5); i--) {
-      const p = detectProgress(logs[i].line);
+      const p = detectSimpleProgress(logs[i].line);
       if (p !== null) { setProgress(p); return; }
     }
   }, [logs]);
 
-  // Reset progress when logs are cleared
+  // Reset progress and duration ref when logs are cleared
   useEffect(() => {
-    if (logs.length === 0) setProgress(null);
+    if (logs.length === 0) {
+      setProgress(null);
+      durationRef.current = null;
+    }
   }, [logs.length]);
 
   // Smart auto-scroll: only scroll if user is near the bottom

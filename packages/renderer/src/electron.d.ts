@@ -46,6 +46,14 @@ import type {
   WorkflowAddResponse,
   GithubRecommendRequest,
   GithubRecommendResponse,
+  ProjectGetHistoryRequest,
+  ProjectGetHistoryResponse,
+  WorkflowFillRequest,
+  WorkflowFillResponse,
+  ProjectCheckUpdateRequest,
+  ProjectCheckUpdateResponse,
+  ProjectApplyUpdateRequest,
+  ProjectApplyUpdateResponse,
   FileGetInfoRequest,
   FileGetInfoResponse,
   AppConfirmRequest,
@@ -110,6 +118,11 @@ declare global {
         generateUi: (req: ProjectGenerateUiRequest) => Promise<ProjectGenerateUiResponse>;
         improve: (req: ProjectImproveRequest) => Promise<ProjectImproveResponse>;
         addWorkflow: (req: WorkflowAddRequest) => Promise<WorkflowAddResponse>;
+        getHistory: (req: ProjectGetHistoryRequest) => Promise<ProjectGetHistoryResponse>;
+        clearHistory: (projectId: string) => Promise<void>;
+        fillForm: (req: WorkflowFillRequest) => Promise<WorkflowFillResponse>;
+        checkUpdate: (req: ProjectCheckUpdateRequest) => Promise<ProjectCheckUpdateResponse>;
+        applyUpdate: (req: ProjectApplyUpdateRequest) => Promise<ProjectApplyUpdateResponse>;
       };
       on: {
         log: (callback: (event: ExecLogEvent) => void) => () => void;

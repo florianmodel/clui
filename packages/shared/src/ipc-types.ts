@@ -53,9 +53,18 @@ export enum IPCChannel {
   PROJECT_GENERATE_UI = 'project:generateUi',
   PROJECT_IMPROVE = 'project:improve',
   WORKFLOW_ADD = 'workflow:add',
+  WORKFLOW_FILL = 'workflow:fill',
 
   // GitHub AI recommendation
   GITHUB_RECOMMEND = 'github:recommend',
+
+  // Run history
+  PROJECT_GET_HISTORY = 'project:getHistory',
+  PROJECT_CLEAR_HISTORY = 'project:clearHistory',
+
+  // One-click update
+  PROJECT_CHECK_UPDATE = 'project:checkUpdate',
+  PROJECT_APPLY_UPDATE = 'project:applyUpdate',
 
   // App
   APP_GET_PATH = 'app:getPath',
@@ -186,6 +195,8 @@ export interface ExecSchemaRunRequest {
   inputs: Record<string, unknown>;
   /** Host directory where output files are copied after the run. Defaults to a temp dir. */
   outputDir?: string;
+  /** If provided, run is appended to this project's history. */
+  projectId?: string;
 }
 
 export interface SchemaGenerateRequest {
@@ -449,6 +460,66 @@ export interface GithubRecommendRequest {
 export interface GithubRecommendResponse {
   ok: boolean;
   repos?: RepoSuggestion[];
+  error?: string;
+}
+
+// ── Run history ────────────────────────────────────────────────────────────────
+
+export interface RunRecord {
+  id: string;
+  workflowId: string;
+  workflowName: string;
+  startedAt: string;    // ISO timestamp
+  durationMs: number;
+  success: boolean;
+  exitCode: number;
+  outputFiles: string[];
+  error?: string;
+}
+
+export interface ProjectGetHistoryRequest {
+  projectId: string;
+}
+
+export interface ProjectGetHistoryResponse {
+  ok: boolean;
+  records?: RunRecord[];
+}
+
+// ── Workflow form fill (LLM-powered) ───────────────────────────────────────────
+
+export interface WorkflowFillRequest {
+  description: string;
+  workflow: Workflow;
+  projectId: string;
+}
+
+export interface WorkflowFillResponse {
+  ok: boolean;
+  values?: Record<string, unknown>;
+  error?: string;
+}
+
+// ── One-click update ──────────────────────────────────────────────────────────
+
+export interface ProjectCheckUpdateRequest {
+  projectId: string;
+}
+
+export interface ProjectCheckUpdateResponse {
+  ok: boolean;
+  hasUpdate?: boolean;
+  behindBy?: number;
+  error?: string;
+}
+
+export interface ProjectApplyUpdateRequest {
+  projectId: string;
+}
+
+export interface ProjectApplyUpdateResponse {
+  ok: boolean;
+  schema?: UISchema;
   error?: string;
 }
 

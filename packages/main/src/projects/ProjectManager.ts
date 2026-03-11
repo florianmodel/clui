@@ -1,6 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import type {
   ProjectMeta,
   ProjectStatus,
@@ -212,6 +214,68 @@ export class ProjectManager {
   openFolder(projectId: string): string | null {
     const meta = this.getMeta(projectId);
     return meta ? path.join(this.projectsDir, projectId) : null;
+  }
+
+  /** Check whether the upstream repo has new commits since the last install. */
+  async checkForUpdates(projectId: string): Promise<{ hasUpdate: boolean; behindBy: number }> {
+    const meta = this.getMeta(projectId);
+    if (!meta?.repoDir) return { hasUpdate: false, behindBy: 0 };
+
+    const execAsync = promisify(exec);
+    try {
+      await execAsync('git fetch origin --quiet', { cwd: meta.repoDir });
+      const { stdout } = await execAsync('git rev-list HEAD..origin/HEAD --count', { cwd: meta.repoDir });
+      const behindBy = parseInt(stdout.trim(), 10) || 0;
+      return { hasUpdate: behindBy > 0, behindBy };
+    } catch {
+      return { hasUpdate: false, behindBy: 0 };
+    }
+  }
+
+  /** Pull latest commits, rebuild Docker image, regenerate schema. */
+  async applyUpdate(
+    projectId: string,
+    llmClient: ILLMClient,
+    onProgress: (event: InstallProgressEvent) => void,
+  ): Promise<UISchema> {
+    const meta = this.getMeta(projectId);
+    if (!meta) throw new Error(`Project "${projectId}" not found`);
+
+    const send = (stage: InstallProgressEvent['stage'], message: string) =>
+      onProgress({ projectId, stage, message });
+
+    const execAsync = promisify(exec);
+
+    send('cloning', 'Pulling latest changes…');
+    await execAsync('git pull origin --ff-only', { cwd: meta.repoDir });
+
+    send('building', 'Rebuilding Docker image…');
+    await this.docker.removeImage(meta.dockerImage).catch(() => {});
+    await this.imageBuilder.buildForProject(projectId, meta.repoDir, StackDetector.detect(meta.repoDir), (line) => {
+      send('building', line);
+    });
+
+    send('analyzing', 'Re-analyzing CLI interface…');
+    const analyzer = new Analyzer(this.docker, this.scriptsDir);
+    const dump = await analyzer.analyze(meta.repoDir, meta.dockerImage);
+
+    send('generating', 'Regenerating interface with AI…');
+    const schema = await llmClient.generateUISchema(dump, meta.dockerImage);
+
+    const schemaPath = path.join(this.projectsDir, projectId, 'schema.json');
+    fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
+    fs.writeFileSync(schemaPath, JSON.stringify(schema, null, 2), 'utf8');
+
+    const updatedMeta: ProjectMeta = {
+      ...meta,
+      status: 'ready',
+      schemaPath,
+      installedAt: new Date().toISOString(),
+    };
+    this.saveMeta(updatedMeta);
+    send('complete', 'Updated!');
+
+    return schema;
   }
 
   private saveMeta(meta: ProjectMeta): void {

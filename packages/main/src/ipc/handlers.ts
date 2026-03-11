@@ -48,6 +48,14 @@ import {
   type WorkflowAddResponse,
   type GithubRecommendRequest,
   type GithubRecommendResponse,
+  type ProjectGetHistoryRequest,
+  type ProjectGetHistoryResponse,
+  type WorkflowFillRequest,
+  type WorkflowFillResponse,
+  type ProjectCheckUpdateRequest,
+  type ProjectCheckUpdateResponse,
+  type ProjectApplyUpdateRequest,
+  type ProjectApplyUpdateResponse,
   type FileGetInfoRequest,
   type FileGetInfoResponse,
   type FileInfo,
@@ -66,13 +74,16 @@ import { ConfigManager } from '../config/ConfigManager.js';
 import { buildFixCommandPrompt } from '../analyzer/prompts/fix-command.js';
 import { buildAddWorkflowPrompt } from '../analyzer/prompts/add-workflow.js';
 import { buildRepoRecommendationPrompt } from '../analyzer/prompts/recommend-repos.js';
+import { buildFormFillPrompt } from '../analyzer/prompts/fill-form.js';
 import { GitHubClient } from '../github/GitHubClient.js';
 import { ProjectManager } from '../projects/ProjectManager.js';
+import { HistoryStore } from '../projects/HistoryStore.js';
 
 const docker = new DockerManager();
 const configManager = new ConfigManager();
 const schemaCache = new SchemaCache();
 const githubClient = new GitHubClient();
+const historyStore = new HistoryStore();
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -278,6 +289,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     IPCChannel.EXEC_SCHEMA_RUN,
     async (_event, req: ExecSchemaRunRequest): Promise<ExecRunResponse> => {
       const win = getWindow();
+      const startedAt = Date.now();
 
       const sendLog = (stream: 'stdout' | 'stderr' | 'system', line: string) => {
         const event: ExecLogEvent = { stream, line, timestamp: Date.now() };
@@ -356,12 +368,42 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           error: result.error,
         };
         win?.webContents.send(IPCChannel.EXEC_COMPLETE, complete);
+
+        // Persist run to history
+        if (req.projectId) {
+          historyStore.append(req.projectId, {
+            id: String(Date.now()),
+            workflowId: req.workflow.id,
+            workflowName: req.workflow.name,
+            startedAt: new Date().toISOString(),
+            durationMs: Date.now() - startedAt,
+            success: result.exitCode === 0,
+            exitCode: result.exitCode,
+            outputFiles,
+          });
+        }
+
         return { ok: true };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         sendLog('system', `Error: ${msg}`);
         const complete: ExecCompleteEvent = { exitCode: -1, outputFiles: [], error: msg };
         win?.webContents.send(IPCChannel.EXEC_COMPLETE, complete);
+
+        if (req.projectId) {
+          historyStore.append(req.projectId, {
+            id: String(Date.now()),
+            workflowId: req.workflow.id,
+            workflowName: req.workflow.name,
+            startedAt: new Date().toISOString(),
+            durationMs: Date.now() - startedAt,
+            success: false,
+            exitCode: -1,
+            outputFiles: [],
+            error: msg,
+          });
+        }
+
         return { ok: false, error: msg };
       } finally {
         if (ownedInput && inputDir) docker.removeTempDir(inputDir);
@@ -818,6 +860,98 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         }
 
         return { ok: true, repos: parsed };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, error: msg };
+      }
+    },
+  );
+
+  // ── project:getHistory ─────────────────────────────────────────────────
+  ipcMain.handle(
+    IPCChannel.PROJECT_GET_HISTORY,
+    (_event, req: ProjectGetHistoryRequest): ProjectGetHistoryResponse => {
+      const records = historyStore.list(req.projectId);
+      return { ok: true, records };
+    },
+  );
+
+  // ── project:clearHistory ───────────────────────────────────────────────
+  ipcMain.handle(
+    IPCChannel.PROJECT_CLEAR_HISTORY,
+    (_event, projectId: string): void => {
+      historyStore.clear(projectId);
+    },
+  );
+
+  // ── workflow:fill ──────────────────────────────────────────────────────
+  // LLM maps a natural-language description to form field values.
+  ipcMain.handle(
+    IPCChannel.WORKFLOW_FILL,
+    async (_event, req: WorkflowFillRequest): Promise<WorkflowFillResponse> => {
+      const config = configManager.getConfig();
+
+      if (!config.anthropicApiKey && !config.mockMode) {
+        return { ok: false, error: 'No API key configured. Add one in Settings.' };
+      }
+
+      try {
+        const useMock = config.mockMode === true;
+        const llmClient = useMock
+          ? new MockLLMClient()
+          : new LLMClient(config.anthropicApiKey!);
+
+        if (!('rawComplete' in llmClient)) {
+          return { ok: false, error: 'Mock mode does not support form fill.' };
+        }
+        const raw = await (llmClient as LLMClient).rawComplete(buildFormFillPrompt(req.description, req.workflow));
+        const trimmed = raw.trim();
+        const parsed = JSON.parse(trimmed === '' ? '{}' : trimmed);
+        return { ok: true, values: parsed };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, error: msg };
+      }
+    },
+  );
+
+  // ── project:checkUpdate ────────────────────────────────────────────────
+  ipcMain.handle(
+    IPCChannel.PROJECT_CHECK_UPDATE,
+    async (_event, req: ProjectCheckUpdateRequest): Promise<ProjectCheckUpdateResponse> => {
+      try {
+        const result = await projectManager.checkForUpdates(req.projectId);
+        return { ok: true, ...result };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, error: msg };
+      }
+    },
+  );
+
+  // ── project:applyUpdate ────────────────────────────────────────────────
+  ipcMain.handle(
+    IPCChannel.PROJECT_APPLY_UPDATE,
+    async (_event, req: ProjectApplyUpdateRequest): Promise<ProjectApplyUpdateResponse> => {
+      const win = getWindow();
+      const config = configManager.getConfig();
+
+      if (!config.anthropicApiKey && !config.mockMode) {
+        return { ok: false, error: 'No API key configured. Add one in Settings.' };
+      }
+
+      const sendProgress = (event: InstallProgressEvent) => {
+        win?.webContents.send(IPCChannel.PROJECT_INSTALL_PROGRESS, event);
+      };
+
+      try {
+        const useMock = config.mockMode === true;
+        const llmClient = useMock
+          ? new MockLLMClient()
+          : new LLMClient(config.anthropicApiKey!);
+
+        const schema = await projectManager.applyUpdate(req.projectId, llmClient, sendProgress);
+        return { ok: true, schema };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         return { ok: false, error: msg };

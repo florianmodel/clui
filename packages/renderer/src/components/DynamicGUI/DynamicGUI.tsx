@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { UISchema, ExecLogEvent } from '@gui-bridge/shared';
 import { WorkflowSelector } from './WorkflowSelector.js';
 import { WorkflowPanel } from './WorkflowPanel.js';
+import { HistoryPanel } from './HistoryPanel.js';
 
 type ImproveStatus = 'idle' | 'open' | 'thinking' | 'error';
 type AddWorkflowStatus = 'idle' | 'open' | 'thinking' | 'error' | 'infeasible';
@@ -19,6 +20,39 @@ interface Props {
 
 export function DynamicGUI({ schema, onLog, onClearLogs, dockerStatus, projectId, onSchemaImproved }: Props) {
   const [activeWorkflowId, setActiveWorkflowId] = useState(schema.workflows[0].id);
+
+  // Run history refresh trigger
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
+  const handleRunComplete = useCallback(() => setHistoryRefreshKey((k) => k + 1), []);
+
+  // One-click update state
+  const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'available' | 'updating' | 'done'>('idle');
+  const [updateBehindBy, setUpdateBehindBy] = useState(0);
+
+  useEffect(() => {
+    if (!projectId) return;
+    setUpdateStatus('checking');
+    window.electronAPI.projects.checkUpdate({ projectId }).then((res) => {
+      if (res.ok && res.hasUpdate) {
+        setUpdateStatus('available');
+        setUpdateBehindBy(res.behindBy ?? 0);
+      } else {
+        setUpdateStatus('idle');
+      }
+    }).catch(() => setUpdateStatus('idle'));
+  }, [projectId]);
+
+  async function handleApplyUpdate() {
+    if (!projectId) return;
+    setUpdateStatus('updating');
+    const res = await window.electronAPI.projects.applyUpdate({ projectId });
+    if (res.ok && res.schema) {
+      onSchemaImproved?.(res.schema);
+      setUpdateStatus('done');
+    } else {
+      setUpdateStatus('available');
+    }
+  }
 
   // Improve panel state
   const [improveStatus, setImproveStatus] = useState<ImproveStatus>('idle');
@@ -257,6 +291,22 @@ export function DynamicGUI({ schema, onLog, onClearLogs, dockerStatus, projectId
         />
       )}
 
+      {/* One-click update banner */}
+      {(updateStatus === 'available' || updateStatus === 'updating' || updateStatus === 'done') && (
+        <div style={styles.updateBanner}>
+          <span>
+            {updateStatus === 'done' ? '✓ Updated!' :
+             updateStatus === 'updating' ? '↻ Updating…' :
+             `↑ Update available (${updateBehindBy} new commit${updateBehindBy !== 1 ? 's' : ''})`}
+          </span>
+          {updateStatus === 'available' && (
+            <button type="button" style={styles.updateBtn} onClick={handleApplyUpdate}>
+              Update
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Divider */}
       <div style={styles.divider} />
 
@@ -267,7 +317,14 @@ export function DynamicGUI({ schema, onLog, onClearLogs, dockerStatus, projectId
         schema={schema}
         onLog={onLog}
         onClearLogs={onClearLogs}
+        projectId={projectId}
+        onRunComplete={handleRunComplete}
       />
+
+      {/* Run history */}
+      {projectId && (
+        <HistoryPanel projectId={projectId} refreshKey={historyRefreshKey} />
+      )}
     </div>
   );
 }
@@ -350,5 +407,18 @@ const styles: Record<string, React.CSSProperties> = {
   improveCancelBtn: {
     border: 'none', background: 'transparent',
     color: 'var(--text-muted)', fontSize: 12, padding: '6px 8px', cursor: 'pointer',
+  },
+  // Update banner
+  updateBanner: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    padding: '8px 14px',
+    background: 'rgba(96, 165, 250, 0.08)',
+    border: '1px solid rgba(96, 165, 250, 0.3)',
+    borderRadius: 8, fontSize: 13, color: 'var(--accent)',
+  },
+  updateBtn: {
+    border: '1px solid var(--accent)', borderRadius: 7,
+    background: 'transparent', color: 'var(--accent)',
+    fontWeight: 600, fontSize: 12, padding: '4px 12px', cursor: 'pointer',
   },
 };

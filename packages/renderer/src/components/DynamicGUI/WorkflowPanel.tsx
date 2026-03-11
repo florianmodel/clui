@@ -10,6 +10,8 @@ interface Props {
   schema: UISchema;
   onLog: (event: ExecLogEvent) => void;
   onClearLogs: () => void;
+  projectId?: string;
+  onRunComplete?: () => void;
 }
 
 type RunStatus = 'idle' | 'running' | 'done' | 'error';
@@ -45,13 +47,22 @@ function initValues(workflow: Workflow): Record<string, unknown> {
   return values;
 }
 
-export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
+export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId, onRunComplete }: Props) {
   const [values, setValues] = useState<Record<string, unknown>>(() => initValues(workflow));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [runStatus, setRunStatus] = useState<RunStatus>('idle');
   const [outputFiles, setOutputFiles] = useState<string[]>([]);
   const [outputDir, setOutputDir] = useState<string>('');
   const [outputDirError, setOutputDirError] = useState<string>('');
+
+  // Batch mode
+  const [batchMode, setBatchMode] = useState(false);
+  const [batchFiles, setBatchFiles] = useState<string[]>([]);
+  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(null);
+
+  // Natural language form fill
+  const [fillInput, setFillInput] = useState('');
+  const [fillStatus, setFillStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
 
   // Local mutable workflow copy — updated when auto-fix accepts a new command template
   const [currentWorkflow, setCurrentWorkflow] = useState<Workflow>(workflow);
@@ -112,6 +123,11 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
     setFixExplanation(null);
     setFailedCommand('');
     errorOutputRef.current = '';
+    setBatchMode(false);
+    setBatchFiles([]);
+    setBatchProgress(null);
+    setFillInput('');
+    setFillStatus('idle');
   }, [workflow.id]);
 
   // Capture stderr/system lines for the auto-fix request
@@ -154,8 +170,9 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
             timestamp: Date.now(),
           });
         }
+        onRunComplete?.();
       },
-      [currentWorkflow, onLog],
+      [currentWorkflow, onLog, onRunComplete],
     ),
   );
 
@@ -193,6 +210,91 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
     return Object.keys(newErrors).length === 0;
   }
 
+  // Batch mode helpers
+  const batchFileStep = currentWorkflow.steps.find((s) => s.type === 'file_input' && !s.multiple);
+  const batchEligible = !!batchFileStep;
+
+  async function handleAddBatchFiles() {
+    const result = await window.electronAPI.files.pick({
+      title: 'Select files to process',
+      properties: ['openFile', 'multiSelections'],
+    });
+    if (!result.canceled) {
+      setBatchFiles((prev) => [...prev, ...result.filePaths.filter((f) => !prev.includes(f))]);
+    }
+  }
+
+  async function handleBatchRun() {
+    if (!batchFiles.length || !batchFileStep) return;
+    if (!outputDir) { setOutputDirError('Please select an output folder'); return; }
+    setOutputDirError('');
+    onClearLogs();
+    setOutputFiles([]);
+    setRunStatus('running');
+    setBatchProgress({ current: 0, total: batchFiles.length });
+    errorOutputRef.current = '';
+
+    const allOutputFiles: string[] = [];
+    for (let i = 0; i < batchFiles.length; i++) {
+      const file = batchFiles[i];
+      const filename = file.split('/').pop() ?? file;
+      onLog({ stream: 'system', line: `--- File ${i + 1}/${batchFiles.length}: ${filename} ---`, timestamp: Date.now() });
+
+      const completePromise = new Promise<ExecCompleteEvent>((resolve) => {
+        const cleanup = window.electronAPI.on.complete((event) => { cleanup(); resolve(event); });
+      });
+
+      const response = await window.electronAPI.exec.schemaRun({
+        workflow: currentWorkflow,
+        dockerImage: schema.dockerImage,
+        dockerfilePath: schema.dockerfilePath,
+        inputs: { ...values, [batchFileStep.id]: file },
+        outputDir,
+        projectId,
+      });
+      if (!response.ok) {
+        onLog({ stream: 'system', line: `Failed to start: ${response.error ?? 'unknown'}`, timestamp: Date.now() });
+        continue;
+      }
+      const result = await completePromise;
+      allOutputFiles.push(...result.outputFiles);
+      setBatchProgress({ current: i + 1, total: batchFiles.length });
+    }
+
+    setOutputFiles(allOutputFiles);
+    setRunStatus('done');
+    setBatchProgress(null);
+    onRunComplete?.();
+  }
+
+  // Natural language form fill
+  async function handleFormFill() {
+    if (!fillInput.trim() || !projectId) return;
+    setFillStatus('loading');
+    const res = await window.electronAPI.projects.fillForm({
+      description: fillInput,
+      workflow: currentWorkflow,
+      projectId,
+    });
+    if (!res.ok || !res.values) {
+      setFillStatus('error');
+      setTimeout(() => setFillStatus('idle'), 2000);
+      return;
+    }
+    const fileStepIds = new Set(
+      currentWorkflow.steps.filter((s) => s.type === 'file_input' || s.type === 'directory_input').map((s) => s.id),
+    );
+    setValues((prev) => {
+      const merged = { ...prev };
+      for (const [k, v] of Object.entries(res.values!)) {
+        if (!fileStepIds.has(k)) merged[k] = v;
+      }
+      return merged;
+    });
+    setFillStatus('done');
+    setTimeout(() => setFillStatus('idle'), 2000);
+  }
+
   async function pickOutputDir() {
     const result = await window.electronAPI.files.pick({
       title: 'Select output folder',
@@ -227,6 +329,7 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
       dockerfilePath: schema.dockerfilePath,
       inputs: values,
       outputDir,
+      projectId,
     });
 
     if (!response.ok && runStatus !== 'error') {
@@ -305,6 +408,10 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
     if (!step.showIf) return true;
     const { stepId, equals } = step.showIf;
     return values[stepId] === equals;
+  }).filter((step) => {
+    // In batch mode, hide the batch file step (we show a custom list UI instead)
+    if (batchMode && batchFileStep && step.id === batchFileStep.id) return false;
+    return true;
   });
 
   return (
@@ -323,6 +430,33 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
         </div>
       )}
 
+      {/* Natural language form fill */}
+      {projectId && (
+        <div style={styles.fillRow}>
+          <input
+            type="text"
+            placeholder="Describe what you want… (e.g. convert to 720p MP4)"
+            value={fillInput}
+            onChange={(e) => setFillInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') handleFormFill(); }}
+            style={styles.fillInput}
+            disabled={fillStatus === 'loading'}
+          />
+          <button
+            type="button"
+            style={{
+              ...styles.fillBtn,
+              background: fillStatus === 'done' ? 'var(--green)' : fillStatus === 'error' ? 'var(--red)' : 'var(--surface-2)',
+              color: fillStatus === 'done' || fillStatus === 'error' ? '#fff' : 'var(--text)',
+            }}
+            onClick={handleFormFill}
+            disabled={fillStatus === 'loading' || !fillInput.trim()}
+          >
+            {fillStatus === 'loading' ? '…' : fillStatus === 'done' ? '✓ Filled' : fillStatus === 'error' ? '✗' : 'Auto-fill'}
+          </button>
+        </div>
+      )}
+
       {/* Form steps */}
       <div style={styles.steps}>
         {visibleSteps.map((step) => (
@@ -335,6 +469,39 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
           />
         ))}
       </div>
+
+      {/* Batch file list */}
+      {batchMode && batchFileStep && (
+        <div style={styles.batchSection}>
+          <div style={styles.batchHeader}>
+            <span style={styles.batchLabel}>{batchFileStep.label} — {batchFiles.length} file{batchFiles.length !== 1 ? 's' : ''}</span>
+            <button type="button" style={styles.batchAddBtn} onClick={handleAddBatchFiles}>
+              + Add Files
+            </button>
+          </div>
+          {batchFiles.length > 0 && (
+            <div style={styles.batchFileList}>
+              {batchFiles.map((f) => (
+                <div key={f} style={styles.batchFileRow}>
+                  <span style={styles.batchFileName}>{f.split('/').pop()}</span>
+                  <button
+                    type="button"
+                    style={styles.batchRemoveBtn}
+                    onClick={() => setBatchFiles((prev) => prev.filter((x) => x !== f))}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {batchProgress && (
+            <div style={styles.batchProgressText}>
+              Processing {batchProgress.current}/{batchProgress.total}…
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Output folder */}
       <div style={styles.outputDirField}>
@@ -358,6 +525,22 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
 
       {/* Run button */}
       <div style={styles.actions}>
+        {batchEligible && (
+          <button
+            type="button"
+            style={{
+              ...styles.batchToggle,
+              background: batchMode ? 'var(--accent-dim)' : 'transparent',
+              color: batchMode ? 'var(--accent)' : 'var(--text-muted)',
+              borderColor: batchMode ? 'var(--accent)' : 'var(--border)',
+            }}
+            onClick={() => setBatchMode((m) => !m)}
+            disabled={busy}
+            title="Process multiple files in sequence"
+          >
+            Batch
+          </button>
+        )}
         <button
           type="button"
           style={{
@@ -365,15 +548,15 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs }: Props) {
             background: runStatus === 'done' ? 'var(--green)' : 'var(--accent)',
             opacity: busy ? 0.7 : 1,
           }}
-          onClick={() => handleRun()}
-          disabled={busy}
+          onClick={() => batchMode ? handleBatchRun() : handleRun()}
+          disabled={busy || (batchMode && batchFiles.length === 0)}
         >
           {(fixStatus === 'thinking') && '🔍 Analyzing error…'}
           {(fixStatus === 'rerunning') && '⏳ Re-running with fix…'}
           {(fixStatus !== 'thinking' && fixStatus !== 'rerunning') && (
             <>
               {busy && `⏳ Running… ${formatElapsed(elapsed)}`}
-              {!busy && runStatus === 'idle' && '▶ Run'}
+              {!busy && runStatus === 'idle' && (batchMode ? `▶ Run Batch (${batchFiles.length} file${batchFiles.length !== 1 ? 's' : ''})` : '▶ Run')}
               {!busy && runStatus === 'done' && `✓ Done (${formatElapsed(elapsed)}) — Run Again`}
               {!busy && runStatus === 'error' && '✗ Error — Retry'}
             </>
@@ -586,4 +769,46 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 8, color: 'var(--text-muted)', fontSize: 12,
     padding: '7px 14px', cursor: 'pointer', textAlign: 'center',
   },
+  // Form fill
+  fillRow: { display: 'flex', gap: 8, alignItems: 'center' },
+  fillInput: {
+    flex: 1, background: 'var(--surface-2)', border: '1px solid var(--border)',
+    borderRadius: 8, color: 'var(--text)', fontSize: 13, padding: '8px 12px',
+    outline: 'none',
+  },
+  fillBtn: {
+    border: '1px solid var(--border)', borderRadius: 8,
+    fontWeight: 600, fontSize: 13, padding: '8px 14px', cursor: 'pointer',
+    flexShrink: 0, transition: 'background 0.2s',
+  },
+  // Batch mode
+  batchToggle: {
+    border: '1px solid', borderRadius: 10,
+    fontWeight: 600, fontSize: 13, padding: '12px 16px', cursor: 'pointer',
+    flexShrink: 0, transition: 'background 0.2s, color 0.2s',
+  },
+  batchSection: {
+    display: 'flex', flexDirection: 'column', gap: 8,
+    padding: '12px 14px',
+    background: 'var(--surface-2)', border: '1px solid var(--border)',
+    borderRadius: 10,
+  },
+  batchHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
+  batchLabel: { fontSize: 13, fontWeight: 600, color: 'var(--text)' },
+  batchAddBtn: {
+    border: '1px solid var(--border)', borderRadius: 8,
+    background: 'transparent', color: 'var(--text-muted)',
+    fontSize: 12, padding: '4px 10px', cursor: 'pointer',
+  },
+  batchFileList: { display: 'flex', flexDirection: 'column', gap: 4 },
+  batchFileRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  batchFileName: {
+    fontSize: 12, color: 'var(--text)', fontFamily: 'var(--font-mono)',
+    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+  },
+  batchRemoveBtn: {
+    background: 'transparent', border: 'none', color: 'var(--text-muted)',
+    fontSize: 14, cursor: 'pointer', padding: '0 4px', flexShrink: 0,
+  },
+  batchProgressText: { fontSize: 12, color: 'var(--accent)', fontStyle: 'italic' },
 };

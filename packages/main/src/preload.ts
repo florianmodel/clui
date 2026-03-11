@@ -45,6 +45,14 @@ import {
   type WorkflowAddResponse,
   type GithubRecommendRequest,
   type GithubRecommendResponse,
+  type ProjectGetHistoryRequest,
+  type ProjectGetHistoryResponse,
+  type WorkflowFillRequest,
+  type WorkflowFillResponse,
+  type ProjectCheckUpdateRequest,
+  type ProjectCheckUpdateResponse,
+  type ProjectApplyUpdateRequest,
+  type ProjectApplyUpdateResponse,
   type FileGetInfoRequest,
   type FileGetInfoResponse,
   type AppConfirmRequest,
@@ -109,6 +117,11 @@ export interface ElectronAPI {
     generateUi: (req: ProjectGenerateUiRequest) => Promise<ProjectGenerateUiResponse>;
     improve: (req: ProjectImproveRequest) => Promise<ProjectImproveResponse>;
     addWorkflow: (req: WorkflowAddRequest) => Promise<WorkflowAddResponse>;
+    getHistory: (req: ProjectGetHistoryRequest) => Promise<ProjectGetHistoryResponse>;
+    clearHistory: (projectId: string) => Promise<void>;
+    fillForm: (req: WorkflowFillRequest) => Promise<WorkflowFillResponse>;
+    checkUpdate: (req: ProjectCheckUpdateRequest) => Promise<ProjectCheckUpdateResponse>;
+    applyUpdate: (req: ProjectApplyUpdateRequest) => Promise<ProjectApplyUpdateResponse>;
   };
   on: {
     log: (callback: (event: ExecLogEvent) => void) => () => void;
@@ -217,6 +230,16 @@ const api: ElectronAPI = {
       ipcRenderer.invoke(IPCChannel.PROJECT_IMPROVE, req),
     addWorkflow: (req: WorkflowAddRequest) =>
       ipcRenderer.invoke(IPCChannel.WORKFLOW_ADD, req),
+    getHistory: (req: ProjectGetHistoryRequest) =>
+      ipcRenderer.invoke(IPCChannel.PROJECT_GET_HISTORY, req),
+    clearHistory: (projectId: string) =>
+      ipcRenderer.invoke(IPCChannel.PROJECT_CLEAR_HISTORY, projectId),
+    fillForm: (req: WorkflowFillRequest) =>
+      ipcRenderer.invoke(IPCChannel.WORKFLOW_FILL, req),
+    checkUpdate: (req: ProjectCheckUpdateRequest) =>
+      ipcRenderer.invoke(IPCChannel.PROJECT_CHECK_UPDATE, req),
+    applyUpdate: (req: ProjectApplyUpdateRequest) =>
+      ipcRenderer.invoke(IPCChannel.PROJECT_APPLY_UPDATE, req),
   },
 
   on: {
