@@ -15,13 +15,13 @@ export class ProjectCloner {
 
   /**
    * Clone (or update) a GitHub repo into ~/.gui-bridge/projects/{projectId}/repo/.
-   * Uses --depth 1 for speed.
+   * Uses --depth 1 for speed. Returns the repo directory and HEAD commit SHA.
    */
   async clone(
     owner: string,
     repo: string,
     onProgress: (msg: string) => void,
-  ): Promise<string> {
+  ): Promise<{ repoDir: string; commitSha?: string }> {
     const projectId = `${owner}--${repo}`;
     const targetDir = path.join(this.projectsDir, projectId, 'repo');
 
@@ -37,7 +37,8 @@ export class ProjectCloner {
         // Pull failed (e.g. diverged) — just use existing clone
         onProgress('Using existing clone (pull skipped).');
       }
-      return targetDir;
+      const commitSha = await this.getHeadSha(targetDir);
+      return { repoDir: targetDir, commitSha };
     }
 
     fs.mkdirSync(path.dirname(targetDir), { recursive: true });
@@ -50,7 +51,22 @@ export class ProjectCloner {
     );
 
     onProgress('Clone complete.');
-    return targetDir;
+    const commitSha = await this.getHeadSha(targetDir);
+    return { repoDir: targetDir, commitSha };
+  }
+
+  /** Read the current HEAD commit SHA from a local git repo. Returns undefined on failure. */
+  private async getHeadSha(repoDir: string): Promise<string | undefined> {
+    try {
+      const { stdout } = await execFileAsync(
+        'git',
+        ['-C', repoDir, 'rev-parse', 'HEAD'],
+        { timeout: 5_000 },
+      );
+      return stdout.trim() || undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   getProjectDir(projectId: string): string {

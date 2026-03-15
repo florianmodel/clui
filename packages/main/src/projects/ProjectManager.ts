@@ -16,24 +16,31 @@ import { ProjectCloner } from '../github/ProjectCloner.js';
 import { StackDetector } from '../analyzer/StackDetector.js';
 import { Analyzer } from '../analyzer/Analyzer.js';
 import type { ILLMClient } from '../analyzer/LLMClient.js';
+import { TemplateRegistry } from '../registry/index.js';
 
 export class ProjectManager {
   private projectsDir: string;
   private cloner: ProjectCloner;
   private imageBuilder: ImageBuilder;
   private docker: DockerManager;
+  private registry: TemplateRegistry;
 
   constructor(docker: DockerManager, private scriptsDir: string) {
     this.docker = docker;
     this.projectsDir = path.join(os.homedir(), '.gui-bridge', 'projects');
     this.cloner = new ProjectCloner();
     this.imageBuilder = new ImageBuilder();
+    this.registry = new TemplateRegistry();
   }
 
   /**
    * Full installation pipeline:
-   * clone → detect → build image → analyze CLI → generate UI schema.
+   * clone → detect → registry check → build image → analyze CLI → generate UI schema.
    * Emits progress events via onProgress callback.
+   *
+   * Registry check (step 2.5): silently fetches a pre-generated schema from the community
+   * registry. If found, the analyze + LLM-generate steps are skipped (saving ~25s + API cost).
+   * The Docker image is always built — it's required for execution regardless.
    */
   async install(
     owner: string,
@@ -53,13 +60,54 @@ export class ProjectManager {
     try {
       // Step 1: Clone
       send('cloning', `Cloning ${owner}/${repo}…`);
-      const repoDir = await this.cloner.clone(owner, repo, (msg) => send('cloning', msg));
+      const { repoDir, commitSha } = await this.cloner.clone(owner, repo, (msg) => send('cloning', msg));
 
       // Step 2: Detect stack
       send('detecting', 'Detecting project type…');
       const stack = StackDetector.detect(repoDir);
       send('detecting', `Detected: ${stack.language}${stack.framework && stack.framework !== 'unknown' ? ` + ${stack.framework}` : ''}`);
 
+      // Step 2.5: Registry check — silent, ≤2s, falls through on any failure
+      send('registry', 'Checking community templates…');
+      const registryHit = await this.registry.lookup(owner, repo);
+
+      if (registryHit) {
+        // Found a pre-generated schema — skip analyze + LLM
+        send('registry', 'Found community template — skipping AI generation ✓');
+
+        const schemaPath = path.join(this.projectsDir, projectId, 'schema.json');
+        fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
+        fs.writeFileSync(schemaPath, JSON.stringify(registryHit.schema, null, 2), 'utf8');
+
+        // Still need Docker image for execution
+        send('building', 'Building Docker image (this may take a few minutes)…');
+        await this.imageBuilder.buildForProject(projectId, repoDir, stack, (line) => {
+          send('building', line);
+        });
+
+        const meta: ProjectMeta = {
+          projectId,
+          owner,
+          repo,
+          fullName: `${owner}/${repo}`,
+          description: searchResult.description,
+          language: searchResult.language,
+          stars: searchResult.stars,
+          installedAt: new Date().toISOString(),
+          dockerImage: imageTag,
+          status: 'ready',
+          repoDir,
+          schemaPath,
+          commitSha,
+          schemaSource: 'registry',
+        };
+
+        this.saveMeta(meta);
+        send('complete', 'Ready to use! (community template)');
+        return meta;
+      }
+
+      // Registry miss — run full pipeline
       // Step 3: Build Docker image
       send('building', 'Building Docker image (this may take a few minutes)…');
       await this.imageBuilder.buildForProject(projectId, repoDir, stack, (line) => {
@@ -75,6 +123,7 @@ export class ProjectManager {
       // Step 5: Generate UI schema (only if LLM client available)
       let schemaPath: string | undefined;
       let status: ProjectStatus = 'no-schema';
+      let schemaSource: ProjectMeta['schemaSource'];
 
       if (llmClient) {
         send('generating', 'Generating interface with AI…');
@@ -84,6 +133,7 @@ export class ProjectManager {
           fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
           fs.writeFileSync(schemaPath, JSON.stringify(schema, null, 2), 'utf8');
           status = 'ready';
+          schemaSource = 'llm';
           send('generating', 'Interface generated!');
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -107,6 +157,8 @@ export class ProjectManager {
         status,
         repoDir,
         schemaPath,
+        commitSha,
+        schemaSource,
       };
 
       this.saveMeta(meta);
@@ -160,7 +212,7 @@ export class ProjectManager {
     fs.writeFileSync(schemaPath, JSON.stringify(schema, null, 2), 'utf8');
 
     // Update meta
-    const updatedMeta: ProjectMeta = { ...meta, status: 'ready', schemaPath };
+    const updatedMeta: ProjectMeta = { ...meta, status: 'ready', schemaPath, schemaSource: 'llm' };
     this.saveMeta(updatedMeta);
     send('complete', 'Interface ready!');
 
@@ -270,6 +322,7 @@ export class ProjectManager {
       ...meta,
       status: 'ready',
       schemaPath,
+      schemaSource: 'llm',
       installedAt: new Date().toISOString(),
     };
     this.saveMeta(updatedMeta);

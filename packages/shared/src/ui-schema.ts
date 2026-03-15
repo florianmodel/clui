@@ -47,6 +47,9 @@ export interface Step {
     stepId: string;
     equals: string | number | boolean;
   };
+
+  // Advanced steps are hidden by default behind a "Show advanced options" toggle
+  advanced?: boolean;
 }
 
 export interface ExecutionConfig {

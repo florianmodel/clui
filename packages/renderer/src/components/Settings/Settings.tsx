@@ -4,9 +4,11 @@ interface Props {
   onClose?: () => void;
   theme?: 'dark' | 'light';
   onToggleTheme?: () => void;
+  uiMode?: 'simple' | 'classic';
+  onToggleUiMode?: () => void;
 }
 
-export function Settings({ onClose, theme = 'dark', onToggleTheme }: Props) {
+export function Settings({ onClose, theme = 'dark', onToggleTheme, uiMode = 'simple', onToggleUiMode }: Props) {
   const [apiKey, setApiKey] = useState('');
   const [maskedKey, setMaskedKey] = useState('');
   const [editingKey, setEditingKey] = useState(false);
@@ -154,6 +156,37 @@ export function Settings({ onClose, theme = 'dark', onToggleTheme }: Props) {
           {dockerVersion}
         </div>
       </section>
+
+      {/* Interface mode */}
+      {onToggleUiMode && (
+        <section style={styles.section}>
+          <div style={styles.sectionTitle}>Interface</div>
+          <div style={styles.themeRow}>
+            <div>
+              <span style={styles.sectionDesc}>UI style</span>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                {uiMode === 'simple' ? 'Guided, step-by-step flow (default)' : 'Full classic interface with all options'}
+              </div>
+            </div>
+            <div style={styles.themeToggle}>
+              <button
+                type="button"
+                style={{ ...styles.themeBtn, ...(uiMode === 'simple' ? styles.themeBtnActive : {}) }}
+                onClick={() => uiMode !== 'simple' && onToggleUiMode()}
+              >
+                Simple
+              </button>
+              <button
+                type="button"
+                style={{ ...styles.themeBtn, ...(uiMode === 'classic' ? styles.themeBtnActive : {}) }}
+                onClick={() => uiMode !== 'classic' && onToggleUiMode()}
+              >
+                Classic
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Appearance */}
       {onToggleTheme && (

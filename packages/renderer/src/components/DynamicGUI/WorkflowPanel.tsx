@@ -60,6 +60,9 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId,
   const [batchFiles, setBatchFiles] = useState<string[]>([]);
   const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(null);
 
+  // Advanced options visibility
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
   // Natural language form fill
   const [fillInput, setFillInput] = useState('');
   const [fillStatus, setFillStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
@@ -128,6 +131,7 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId,
     setBatchProgress(null);
     setFillInput('');
     setFillStatus('idle');
+    setShowAdvanced(false);
   }, [workflow.id]);
 
   // Capture stderr/system lines for the auto-fix request
@@ -404,6 +408,8 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId,
   const busy = runStatus === 'running' || fixStatus === 'thinking' || fixStatus === 'rerunning';
   const commandPreview = buildPreview(currentWorkflow, values);
 
+  const hasAdvancedSteps = currentWorkflow.steps.some((s) => s.advanced);
+
   const visibleSteps = currentWorkflow.steps.filter((step) => {
     if (!step.showIf) return true;
     const { stepId, equals } = step.showIf;
@@ -411,6 +417,10 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId,
   }).filter((step) => {
     // In batch mode, hide the batch file step (we show a custom list UI instead)
     if (batchMode && batchFileStep && step.id === batchFileStep.id) return false;
+    return true;
+  }).filter((step) => {
+    // Hide advanced steps unless the user has expanded them
+    if (step.advanced && !showAdvanced) return false;
     return true;
   });
 
@@ -469,6 +479,17 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId,
           />
         ))}
       </div>
+
+      {/* Advanced options toggle */}
+      {hasAdvancedSteps && (
+        <button
+          type="button"
+          style={styles.advancedToggle}
+          onClick={() => setShowAdvanced((v) => !v)}
+        >
+          {showAdvanced ? '▴ Hide advanced options' : '▾ Show advanced options'}
+        </button>
+      )}
 
       {/* Batch file list */}
       {batchMode && batchFileStep && (
@@ -758,6 +779,12 @@ const styles: Record<string, React.CSSProperties> = {
   estimate: {
     fontSize: 12, color: 'var(--text-muted)',
     fontStyle: 'italic', textAlign: 'center',
+  },
+  advancedToggle: {
+    background: 'transparent', border: 'none',
+    color: 'var(--text-muted)', fontSize: 12,
+    padding: '2px 0', cursor: 'pointer', textAlign: 'left',
+    letterSpacing: '0.01em',
   },
   outputSection: { display: 'flex', flexDirection: 'column', gap: 8 },
   outputTitle: {

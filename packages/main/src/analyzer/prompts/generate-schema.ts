@@ -55,6 +55,7 @@ I'll give you a CapabilityDump — a structured analysis of a CLI tool including
 4. **Write human-friendly labels and guidance.** The user is non-technical. Instead of "--output-format", say "Output Format". Instead of "-crf", say "Quality (lower = better, 18-28 recommended)". Add guidance text explaining what each step does in plain English.
 5. **Build the command template** that maps step IDs to the actual CLI command. Use {step_id} placeholders. File inputs should reference /input/{step_id} (files are mounted there at runtime). Output goes to /output/.
 6. **Skip internal/developer flags.** Things like --verbose, --debug, --version, --help, --config-file, --log-level should usually NOT be in the UI.
+7. **Mark non-essential steps as advanced.** Any step that controls fine-grained tuning (e.g. bitrate, codec, quality preset, thread count, sample rate, compression level) that most users don't need to touch should have \`"advanced": true\`. The primary happy-path steps (input file, output filename, main mode selection) must NEVER be marked advanced.
 
 ## Critical output rules — MUST follow to avoid truncation:
 - Output ONLY valid JSON. No markdown fences, no text before or after.
@@ -109,6 +110,7 @@ ${JSON.stringify(trimmedDump, null, 2)}
           "label": "Short Label",
           "type": "text_input",
           "required": true,
+          "advanced": true,
           "default": "value or omit",
           "placeholder": "hint or omit",
           "options": [{"value":"v","label":"L"}],
@@ -146,6 +148,7 @@ ${feedback ? `The user provided this feedback: "${feedback}"\n\nPlease improve t
 - Fix step types if they don't match the argument type (files → file_input, choices → dropdown, etc.)
 - Remove any steps that are confusing or rarely useful
 - Add sensible defaults where missing
+- Mark fine-tuning/advanced steps with "advanced": true (bitrate, codec, quality, thread count, etc.) so they are hidden by default
 
 The tool's CapabilityDump for reference:
 Language: ${dump.stack.language}, Framework: ${dump.stack.framework}

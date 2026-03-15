@@ -227,12 +227,17 @@ export interface WindowConfig {
 
 export interface AppConfig {
   anthropicApiKey?: string;
+  openaiApiKey?: string;
+  /** Which LLM provider to use. Defaults to 'anthropic'. */
+  llmProvider?: 'anthropic' | 'openai';
   /** Use mock LLM client (no API key needed, returns a basic schema) */
   mockMode?: boolean;
   /** Set to true after the user completes first-run onboarding */
   onboardingComplete?: boolean;
   /** Last window position/size — managed by main process */
   window?: WindowConfig;
+  /** UI mode: 'simple' (default, new guided flow) or 'classic' (original interface) */
+  uiMode?: 'simple' | 'classic';
 }
 
 export interface ConfigGetResponse {
@@ -242,12 +247,16 @@ export interface ConfigGetResponse {
 
 export interface ConfigSetRequest {
   anthropicApiKey?: string;
+  openaiApiKey?: string;
+  llmProvider?: 'anthropic' | 'openai';
   mockMode?: boolean;
   onboardingComplete?: boolean;
+  uiMode?: 'simple' | 'classic';
 }
 
 export interface ValidateKeyRequest {
   apiKey: string;
+  provider?: 'anthropic' | 'openai';
 }
 
 export interface ValidateKeyResponse {
@@ -330,11 +339,15 @@ export interface ProjectMeta {
   repoDir: string;
   /** Absolute path to schema.json, if generated */
   schemaPath?: string;
+  /** Git HEAD SHA at install time — used for staleness detection */
+  commitSha?: string;
+  /** How the UISchema was obtained */
+  schemaSource?: 'registry' | 'llm' | 'cache';
 }
 
 export interface InstallProgressEvent {
   projectId: string;
-  stage: 'cloning' | 'detecting' | 'building' | 'analyzing' | 'generating' | 'complete' | 'error';
+  stage: 'cloning' | 'detecting' | 'registry' | 'building' | 'analyzing' | 'generating' | 'complete' | 'error';
   message: string;
 }
 

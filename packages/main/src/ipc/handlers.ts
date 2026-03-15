@@ -68,7 +68,9 @@ import {
 import { DockerManager } from '../docker/index.js';
 import { buildCommand, collectInputFiles } from '../executor/index.js';
 import { Analyzer } from '../analyzer/index.js';
-import { LLMClient, MockLLMClient } from '../analyzer/LLMClient.js';
+import { LLMClient, MockLLMClient, type ILLMClient } from '../analyzer/LLMClient.js';
+import { OpenAIClient } from '../analyzer/OpenAIClient.js';
+import type { AppConfig } from '@gui-bridge/shared';
 import { SchemaCache } from '../analyzer/SchemaCache.js';
 import { ConfigManager } from '../config/ConfigManager.js';
 import { buildFixCommandPrompt } from '../analyzer/prompts/fix-command.js';
@@ -78,6 +80,17 @@ import { buildFormFillPrompt } from '../analyzer/prompts/fill-form.js';
 import { GitHubClient } from '../github/GitHubClient.js';
 import { ProjectManager } from '../projects/ProjectManager.js';
 import { HistoryStore } from '../projects/HistoryStore.js';
+
+/** Instantiate the correct LLM client based on config. Returns MockLLMClient if no key. */
+function makeLLMClient(config: AppConfig): ILLMClient {
+  if (config.mockMode) return new MockLLMClient();
+  if (config.llmProvider === 'openai' && config.openaiApiKey) {
+    return new OpenAIClient(config.openaiApiKey);
+  }
+  if (config.anthropicApiKey) return new LLMClient(config.anthropicApiKey);
+  if (config.openaiApiKey) return new OpenAIClient(config.openaiApiKey);
+  return new MockLLMClient();
+}
 
 const docker = new DockerManager();
 const configManager = new ConfigManager();
@@ -447,6 +460,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle(
     IPCChannel.CONFIG_VALIDATE_KEY,
     async (_event, req: ValidateKeyRequest): Promise<ValidateKeyResponse> => {
+      if (req.provider === 'openai') return OpenAIClient.validateKey(req.apiKey);
       return LLMClient.validateKey(req.apiKey);
     },
   );
@@ -465,15 +479,12 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
       try {
         const config = configManager.getConfig();
-        const useMock = config.mockMode === true || !config.anthropicApiKey;
 
-        if (!config.anthropicApiKey && !config.mockMode) {
-          return { ok: false, error: 'No API key configured. Please add your Anthropic API key in settings.' };
+        if (!config.anthropicApiKey && !config.openaiApiKey && !config.mockMode) {
+          return { ok: false, error: 'No API key configured. Please add your API key in settings.' };
         }
 
-        const llmClient = useMock
-          ? new MockLLMClient()
-          : new LLMClient(config.anthropicApiKey!);
+        const llmClient = makeLLMClient(config);
 
         const scriptsDir = path.join(
           app.getAppPath(),
@@ -520,12 +531,12 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     async (_event, req: ExecAutofixRequest): Promise<ExecAutofixResponse> => {
       const config = configManager.getConfig();
 
-      if (config.mockMode || !config.anthropicApiKey) {
-        return { ok: false, error: 'Auto-fix requires an Anthropic API key. Add one in Settings.' };
+      if (config.mockMode || (!config.anthropicApiKey && !config.openaiApiKey)) {
+        return { ok: false, error: 'Auto-fix requires an API key. Add one in Settings.' };
       }
 
       try {
-        const llm = new LLMClient(config.anthropicApiKey);
+        const llm = makeLLMClient(config) as LLMClient | OpenAIClient;
         const prompt = buildFixCommandPrompt(req.workflow, req.failedCommand, req.errorOutput);
         const text = await llm.rawComplete(prompt);
 
@@ -589,15 +600,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
       try {
         const config = configManager.getConfig();
-        const useMock = config.mockMode === true;
-        const hasKey = !!config.anthropicApiKey;
-
-        let llmClient = null;
-        if (hasKey && !useMock) {
-          llmClient = new LLMClient(config.anthropicApiKey!);
-        } else if (useMock) {
-          llmClient = new MockLLMClient();
-        }
+        const llmClient = makeLLMClient(config);
 
         const meta = await projectManager.install(
           req.owner,
@@ -715,7 +718,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     async (_event, req: ProjectImproveRequest): Promise<ProjectImproveResponse> => {
       const config = configManager.getConfig();
 
-      if (!config.anthropicApiKey && !config.mockMode) {
+      if (!config.anthropicApiKey && !config.openaiApiKey && !config.mockMode) {
         return { ok: false, error: 'No API key configured. Add one in Settings.' };
       }
 
@@ -725,11 +728,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       }
 
       try {
-        const useMock = config.mockMode === true;
-        const llmClient = useMock
-          ? new MockLLMClient()
-          : new LLMClient(config.anthropicApiKey!);
-
+        const llmClient = makeLLMClient(config);
         const analyzer = new Analyzer(docker, scriptsDir);
         const refined = await analyzer.refineSchema(
           meta.repoDir,
@@ -760,7 +759,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       const win = getWindow();
       const config = configManager.getConfig();
 
-      if (!config.anthropicApiKey && !config.mockMode) {
+      if (!config.anthropicApiKey && !config.openaiApiKey && !config.mockMode) {
         return { ok: false, error: 'No API key configured.' };
       }
 
@@ -769,11 +768,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       };
 
       try {
-        const useMock = config.mockMode === true;
-        const llmClient = useMock
-          ? new MockLLMClient()
-          : new LLMClient(config.anthropicApiKey!);
-
+        const llmClient = makeLLMClient(config);
         const schema = await projectManager.generateSchema(req.projectId, llmClient, sendProgress);
         return { ok: true, schema };
       } catch (err: unknown) {
@@ -790,20 +785,16 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     async (_event, req: WorkflowAddRequest): Promise<WorkflowAddResponse> => {
       const config = configManager.getConfig();
 
-      if (!config.anthropicApiKey && !config.mockMode) {
+      if (!config.anthropicApiKey && !config.openaiApiKey && !config.mockMode) {
         return { ok: false, error: 'No API key configured. Add one in Settings.' };
       }
 
       try {
-        const useMock = config.mockMode === true;
-        const llmClient = useMock
-          ? new MockLLMClient()
-          : new LLMClient(config.anthropicApiKey!);
-
+        const llmClient = makeLLMClient(config);
         if (!('rawComplete' in llmClient)) {
           return { ok: false, error: 'Mock mode does not support workflow generation.' };
         }
-        const raw = await (llmClient as LLMClient).rawComplete(buildAddWorkflowPrompt(req.description, req.currentSchema));
+        const raw = await (llmClient as LLMClient | OpenAIClient).rawComplete(buildAddWorkflowPrompt(req.description, req.currentSchema));
         const parsed = JSON.parse(raw.trim());
 
         if (parsed.feasible === false) {
@@ -839,20 +830,16 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     async (_event, req: GithubRecommendRequest): Promise<GithubRecommendResponse> => {
       const config = configManager.getConfig();
 
-      if (!config.anthropicApiKey && !config.mockMode) {
+      if (!config.anthropicApiKey && !config.openaiApiKey && !config.mockMode) {
         return { ok: false, error: 'No API key configured. Add one in Settings.' };
       }
 
       try {
-        const useMock = config.mockMode === true;
-        const llmClient = useMock
-          ? new MockLLMClient()
-          : new LLMClient(config.anthropicApiKey!);
-
+        const llmClient = makeLLMClient(config);
         if (!('rawComplete' in llmClient)) {
           return { ok: false, error: 'Mock mode does not support AI recommendations.' };
         }
-        const raw = await (llmClient as LLMClient).rawComplete(buildRepoRecommendationPrompt(req.description));
+        const raw = await (llmClient as LLMClient | OpenAIClient).rawComplete(buildRepoRecommendationPrompt(req.description));
         const parsed = JSON.parse(raw.trim());
 
         if (!Array.isArray(parsed)) {
@@ -891,20 +878,16 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     async (_event, req: WorkflowFillRequest): Promise<WorkflowFillResponse> => {
       const config = configManager.getConfig();
 
-      if (!config.anthropicApiKey && !config.mockMode) {
+      if (!config.anthropicApiKey && !config.openaiApiKey && !config.mockMode) {
         return { ok: false, error: 'No API key configured. Add one in Settings.' };
       }
 
       try {
-        const useMock = config.mockMode === true;
-        const llmClient = useMock
-          ? new MockLLMClient()
-          : new LLMClient(config.anthropicApiKey!);
-
+        const llmClient = makeLLMClient(config);
         if (!('rawComplete' in llmClient)) {
           return { ok: false, error: 'Mock mode does not support form fill.' };
         }
-        const raw = await (llmClient as LLMClient).rawComplete(buildFormFillPrompt(req.description, req.workflow));
+        const raw = await (llmClient as LLMClient | OpenAIClient).rawComplete(buildFormFillPrompt(req.description, req.workflow));
         const trimmed = raw.trim();
         const parsed = JSON.parse(trimmed === '' ? '{}' : trimmed);
         return { ok: true, values: parsed };
@@ -936,7 +919,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       const win = getWindow();
       const config = configManager.getConfig();
 
-      if (!config.anthropicApiKey && !config.mockMode) {
+      if (!config.anthropicApiKey && !config.openaiApiKey && !config.mockMode) {
         return { ok: false, error: 'No API key configured. Add one in Settings.' };
       }
 
@@ -945,11 +928,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       };
 
       try {
-        const useMock = config.mockMode === true;
-        const llmClient = useMock
-          ? new MockLLMClient()
-          : new LLMClient(config.anthropicApiKey!);
-
+        const llmClient = makeLLMClient(config);
         const schema = await projectManager.applyUpdate(req.projectId, llmClient, sendProgress);
         return { ok: true, schema };
       } catch (err: unknown) {

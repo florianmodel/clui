@@ -30,6 +30,6 @@ export class ConfigManager {
 
   hasApiKey(): boolean {
     const config = this.getConfig();
-    return !!config.anthropicApiKey;
+    return !!config.anthropicApiKey || !!config.openaiApiKey;
   }
 }

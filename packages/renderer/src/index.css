@@ -12,6 +12,7 @@
   --text: #e8e9ea;
   --text-muted: rgba(255, 255, 255, 0.52);
   --accent: #e8e9ea;
+  --accent-rgb: 232, 233, 234;
   --accent-dim: rgba(232, 233, 234, 0.08);
   --green: #22c55e;
   --red: #ef4444;
@@ -27,6 +28,7 @@
   --text: #111213;
   --text-muted: rgba(0, 0, 0, 0.55);
   --accent: #111213;
+  --accent-rgb: 17, 18, 19;
   --accent-dim: rgba(17, 18, 19, 0.07);
   --green: #16a34a;
   --red: #dc2626;
@@ -51,4 +53,31 @@ button {
 button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Animations for SimpleMode */
+@keyframes bounce {
+  0%, 80%, 100% { transform: scale(0.7); opacity: 0.5; }
+  40% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Simple mode search input focus */
+.simple-search:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(232,233,234,0.08);
+}
+
+/* Provider button hover */
+.provider-btn:hover {
+  border-color: var(--text-muted);
+}
+
+/* Tool card hover */
+.tool-card:hover {
+  border-color: var(--text-muted);
 }

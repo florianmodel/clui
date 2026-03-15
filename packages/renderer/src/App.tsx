@@ -19,6 +19,7 @@ import { ProjectBrowser, InstallProgress } from './components/ProjectBrowser/ind
 import { ProjectLibrary } from './components/ProjectLibrary/index.js';
 import { Settings } from './components/Settings/index.js';
 import { Onboarding } from './components/Onboarding/Onboarding.js';
+import { SimpleApp } from './components/SimpleMode/SimpleApp.js';
 
 // ── View state machine ────────────────────────────────────────────────────────
 
@@ -75,6 +76,9 @@ export function App() {
     return (localStorage.getItem('clui-theme') as 'dark' | 'light') ?? 'dark';
   });
 
+  // ── UI mode ───────────────────────────────────────────────────────────
+  const [uiMode, setUiMode] = useState<'simple' | 'classic'>('simple');
+
   // ── Apply theme ───────────────────────────────────────────────────────
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -83,6 +87,12 @@ export function App() {
 
   function toggleTheme() {
     setTheme((t) => (t === 'dark' ? 'light' : 'dark'));
+  }
+
+  async function toggleUiMode() {
+    const next: 'simple' | 'classic' = uiMode === 'simple' ? 'classic' : 'simple';
+    setUiMode(next);
+    await window.electronAPI.config.set({ uiMode: next });
   }
 
   // ── Log handlers ──────────────────────────────────────────────────────
@@ -99,6 +109,7 @@ export function App() {
     // Check onboarding status + initial docker health
     window.electronAPI.config.get().then((configRes) => {
       setOnboardingDone(configRes.config.onboardingComplete === true);
+      setUiMode(configRes.config.uiMode ?? 'simple');
     });
     window.electronAPI.docker.checkHealth().then((res) => {
       setDockerStatus(res.ok ? 'ok' : 'error');
@@ -379,7 +390,7 @@ export function App() {
         return renderAnalyzeView();
 
       case 'settings':
-        return <Settings theme={theme} onToggleTheme={toggleTheme} />;
+        return <Settings theme={theme} onToggleTheme={toggleTheme} uiMode={uiMode} onToggleUiMode={toggleUiMode} />;
 
       default:
         return null;
@@ -457,6 +468,16 @@ export function App() {
 
   // Show nothing until onboarding state is resolved
   if (onboardingDone === null) return null;
+
+  // Simple mode: render the new guided UI
+  if (uiMode === 'simple') {
+    return (
+      <SimpleApp
+        theme={theme}
+        onSwitchToClassic={toggleUiMode}
+      />
+    );
+  }
 
   return (
     <div style={styles.root}>
