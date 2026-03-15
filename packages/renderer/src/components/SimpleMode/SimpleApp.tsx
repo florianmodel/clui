@@ -12,7 +12,7 @@ import { SimpleSettings } from './components/SimpleSettings.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type SetupNeeds = 'docker' | 'apikey' | null;
+type SetupNeeds = 'runtime' | 'apikey' | null;
 
 type Screen =
   | { type: 'welcome' }
@@ -42,7 +42,7 @@ export function SimpleApp({ theme, onSwitchToClassic }: Props) {
     refreshProjects();
 
     const cleanupDocker = window.electronAPI.on.dockerStatus((ev) => {
-      if (ev.running && setupNeeds === 'docker') checkSetup();
+      if (ev.running && setupNeeds === 'runtime') checkSetup();
     });
 
     const onOnline = () => setIsOnline(true);
@@ -58,12 +58,17 @@ export function SimpleApp({ theme, onSwitchToClassic }: Props) {
   }, []);
 
   async function checkSetup() {
-    const [dockerRes, configRes] = await Promise.all([
+    const [dockerRes, configRes, nativeRes] = await Promise.all([
       window.electronAPI.docker.checkHealth(),
       window.electronAPI.config.get(),
+      window.electronAPI.native.checkCapabilities(),
     ]);
-    if (!dockerRes.ok) {
-      setSetupNeeds('docker');
+
+    // Docker OR any native package manager is enough to run tools
+    const canRun = dockerRes.ok || nativeRes.hasHomebrew || nativeRes.hasPip || nativeRes.hasNpm || nativeRes.hasCargo;
+
+    if (!canRun) {
+      setSetupNeeds('runtime');
     } else if (!configRes.hasApiKey && !configRes.config.mockMode) {
       setSetupNeeds('apikey');
     } else {
@@ -78,7 +83,18 @@ export function SimpleApp({ theme, onSwitchToClassic }: Props) {
   // ── Navigation ────────────────────────────────────────────────────────
   const openProject = useCallback(async (projectId: string) => {
     const res = await window.electronAPI.projects.get({ projectId });
-    if (!res.ok || !res.schema) return;
+    if (!res.ok || !res.schema) {
+      // No schema — project needs UI generation. Re-install to trigger generation.
+      if (res.meta) {
+        setScreen({
+          type: 'installing',
+          owner: res.meta.owner,
+          repo: res.meta.repo,
+          projectName: res.meta.repo,
+        });
+      }
+      return;
+    }
     const schemaSource = res.meta?.schemaSource;
     setScreen({ type: 'guided', projectId, schema: res.schema, schemaSource });
   }, []);
@@ -88,8 +104,11 @@ export function SimpleApp({ theme, onSwitchToClassic }: Props) {
     const res = await window.electronAPI.projects.get({ projectId });
     if (res.ok && res.schema) {
       setScreen({ type: 'guided', projectId, schema: res.schema, schemaSource: res.meta?.schemaSource });
+    } else if (res.ok && res.meta) {
+      // Schema was just generated but is invalid — this shouldn't normally happen
+      // but if it does, go to welcome so the user isn't stuck
+      setScreen({ type: 'welcome' });
     } else {
-      // Installed but no schema yet — go back to welcome
       setScreen({ type: 'welcome' });
     }
   }, []);

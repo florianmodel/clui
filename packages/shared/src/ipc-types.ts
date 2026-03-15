@@ -66,6 +66,9 @@ export enum IPCChannel {
   PROJECT_CHECK_UPDATE = 'project:checkUpdate',
   PROJECT_APPLY_UPDATE = 'project:applyUpdate',
 
+  // Native runtime (Docker-free execution)
+  NATIVE_CHECK_CAPABILITIES = 'native:checkCapabilities',
+
   // App
   APP_GET_PATH = 'app:getPath',
   APP_CONFIRM = 'app:confirm',
@@ -343,12 +346,27 @@ export interface ProjectMeta {
   commitSha?: string;
   /** How the UISchema was obtained */
   schemaSource?: 'registry' | 'llm' | 'cache';
+  /** How the tool is executed — 'docker' (default) or 'native' (no Docker required) */
+  executionMode?: 'docker' | 'native';
+  /** Binary name for native execution (e.g. 'ffmpeg', 'yt-dlp') */
+  nativeBinary?: string;
+  /** Detected version of the natively-installed binary */
+  nativeVersion?: string;
 }
 
 export interface InstallProgressEvent {
   projectId: string;
-  stage: 'cloning' | 'detecting' | 'registry' | 'building' | 'analyzing' | 'generating' | 'complete' | 'error';
+  stage: 'cloning' | 'detecting' | 'registry' | 'installing' | 'building' | 'analyzing' | 'generating' | 'complete' | 'error';
   message: string;
+}
+
+export interface NativeCapabilities {
+  hasDocker: boolean;
+  hasHomebrew: boolean;
+  hasPip: boolean;
+  hasNpm: boolean;
+  hasCargo: boolean;
+  platform: string;
 }
 
 export interface ProjectInstallRequest {

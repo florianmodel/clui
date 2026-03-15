@@ -2,7 +2,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
+import { getProjectsDir } from '../paths.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -10,7 +10,7 @@ export class ProjectCloner {
   private projectsDir: string;
 
   constructor() {
-    this.projectsDir = path.join(os.homedir(), '.gui-bridge', 'projects');
+    this.projectsDir = getProjectsDir();
   }
 
   /**
@@ -26,19 +26,26 @@ export class ProjectCloner {
     const targetDir = path.join(this.projectsDir, projectId, 'repo');
 
     if (fs.existsSync(targetDir)) {
-      // Already cloned — pull latest
-      onProgress('Updating existing clone…');
-      try {
-        await execFileAsync('git', ['-C', targetDir, 'pull', '--ff-only'], {
-          timeout: 60_000,
-        });
-        onProgress('Repository updated.');
-      } catch {
-        // Pull failed (e.g. diverged) — just use existing clone
-        onProgress('Using existing clone (pull skipped).');
+      const gitDir = path.join(targetDir, '.git');
+      if (!fs.existsSync(gitDir)) {
+        // Directory exists but has no .git (partial/failed clone) — remove and re-clone
+        onProgress('Removing incomplete clone and retrying…');
+        fs.rmSync(targetDir, { recursive: true, force: true });
+      } else {
+        // Already cloned — pull latest
+        onProgress('Updating existing clone…');
+        try {
+          await execFileAsync('git', ['-C', targetDir, 'pull', '--ff-only'], {
+            timeout: 60_000,
+          });
+          onProgress('Repository updated.');
+        } catch {
+          // Pull failed (e.g. diverged) — just use existing clone
+          onProgress('Using existing clone (pull skipped).');
+        }
+        const commitSha = await this.getHeadSha(targetDir);
+        return { repoDir: targetDir, commitSha };
       }
-      const commitSha = await this.getHeadSha(targetDir);
-      return { repoDir: targetDir, commitSha };
     }
 
     fs.mkdirSync(path.dirname(targetDir), { recursive: true });

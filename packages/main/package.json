@@ -4,8 +4,8 @@
   "private": true,
   "main": "dist/index.js",
   "scripts": {
-    "dev": "tsc -p tsconfig.json --watch & electron dist/index.js",
-    "build": "tsc -p tsconfig.json",
+    "dev": "node build.mjs & electron dist/index.js",
+    "build": "tsc -p tsconfig.json --noEmit && node build.mjs",
     "start": "electron dist/index.js",
     "test": "vitest run"
   },
@@ -19,6 +19,7 @@
     "@types/node": "^22.13.5",
     "@vitest/coverage-v8": "^2.1.8",
     "electron": "^34.2.0",
+    "esbuild": "^0.25.12",
     "typescript": "^5.7.3",
     "vitest": "^2.1.8"
   }

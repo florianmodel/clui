@@ -101,16 +101,18 @@ export function ProjectLibrary({
                 {p.status === 'no-schema' && <span style={styles.noSchemaDot} title="No UI generated">!</span>}
                 {p.status === 'error' && <span style={styles.errorDot} title={p.error}>✗</span>}
 
-                {/* Context menu trigger */}
+                {/* Context menu trigger — must be a div, not a button, to avoid nested-button DOM error */}
                 {(hovered || active) && (
-                  <button
-                    type="button"
+                  <div
+                    role="button"
+                    tabIndex={0}
                     style={styles.menuTrigger}
                     onClick={(e) => { e.stopPropagation(); setMenuFor(showMenu ? null : p.projectId); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); setMenuFor(showMenu ? null : p.projectId); } }}
                     title="Options"
                   >
                     ···
-                  </button>
+                  </div>
                 )}
               </button>
 
@@ -189,7 +191,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   addBtnActive: {
     background: 'var(--surface-2)',
-    borderColor: 'var(--border)',
+    border: '1px dashed var(--border)',
     color: 'var(--text)',
   },
   addIcon: { fontSize: 15 },

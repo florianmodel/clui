@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
 
-type Tab = 'docker' | 'apikey';
+type Tab = 'runtime' | 'apikey';
 
 // macOS paths to check for Docker installation
 const DOCKER_APP_PATH = '/Applications/Docker.app';
 
 interface Props {
-  needs: 'docker' | 'apikey';
+  needs: 'runtime' | 'apikey';
   theme: 'dark' | 'light';
   onComplete: () => void;
 }
@@ -15,6 +15,7 @@ export function SetupScreen({ needs, theme, onComplete }: Props) {
   const [tab, setTab] = useState<Tab>(needs);
   const [dockerStatus, setDockerStatus] = useState<'checking' | 'ok' | 'error'>('checking');
   const [dockerInstalled, setDockerInstalled] = useState<boolean | null>(null); // null = unknown
+  const [hasHomebrew, setHasHomebrew] = useState<boolean | null>(null);
 
   // API key state
   const [provider, setProvider] = useState<'anthropic' | 'openai'>('anthropic');
@@ -24,39 +25,47 @@ export function SetupScreen({ needs, theme, onComplete }: Props) {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    checkDocker();
+    void checkRuntime();
     const cleanup = window.electronAPI.on.dockerStatus((ev) => {
       setDockerStatus(ev.running ? 'ok' : 'error');
-      if (ev.running && tab === 'docker') setTab('apikey');
+      if (ev.running && tab === 'runtime') setTab('apikey');
     });
     return cleanup;
   }, []);
 
-  async function checkDocker() {
+  async function checkRuntime() {
     setDockerStatus('checking');
 
-    // Check if Docker is running
-    const healthRes = await window.electronAPI.docker.checkHealth();
+    // Check Docker and native capabilities in parallel
+    const [healthRes, capsRes] = await Promise.all([
+      window.electronAPI.docker.checkHealth(),
+      window.electronAPI.native.checkCapabilities(),
+    ]);
+
+    setHasHomebrew(capsRes.hasHomebrew || capsRes.hasPip || capsRes.hasNpm || capsRes.hasCargo);
 
     if (healthRes.ok) {
       setDockerStatus('ok');
       setDockerInstalled(true);
-      if (tab === 'docker') setTab('apikey');
+      if (tab === 'runtime') setTab('apikey');
       return;
     }
 
     setDockerStatus('error');
 
+    // If a native package manager is available, that's enough to proceed
+    if (capsRes.hasHomebrew || capsRes.hasPip || capsRes.hasNpm || capsRes.hasCargo) {
+      if (tab === 'runtime') setTab('apikey');
+      return;
+    }
+
     // Detect whether Docker is installed but not running, vs not installed at all
-    // Check by looking for Docker.app on macOS
     const fileRes = await window.electronAPI.files.getInfo({ filePath: DOCKER_APP_PATH });
-    setDockerInstalled(fileRes.ok); // ok=true means the app exists
+    setDockerInstalled(fileRes.ok);
   }
 
   async function handleStartDocker() {
-    // Open Docker.app — works on macOS to launch Docker Desktop
     await window.electronAPI.files.open(DOCKER_APP_PATH);
-    // Start polling
     const poll = setInterval(async () => {
       const res = await window.electronAPI.docker.checkHealth();
       if (res.ok) {
@@ -66,12 +75,15 @@ export function SetupScreen({ needs, theme, onComplete }: Props) {
         setTab('apikey');
       }
     }, 2000);
-    // Give up polling after 60s
     setTimeout(() => clearInterval(poll), 60000);
   }
 
   function handleDownloadDocker() {
     window.open('https://www.docker.com/products/docker-desktop/', '_blank');
+  }
+
+  function handleInstallHomebrew() {
+    window.open('https://brew.sh', '_blank');
   }
 
   async function handleValidateAndSave() {
@@ -112,12 +124,12 @@ export function SetupScreen({ needs, theme, onComplete }: Props) {
 
   const info = providerInfo[provider];
 
-  // Decide docker CTA based on installed status
-  function renderDockerCTA() {
+  // Render runtime setup CTA: Docker running, Homebrew available, or install options
+  function renderRuntimeCTA() {
     if (dockerStatus === 'checking') {
       return (
         <div style={styles.waitingMsg}>
-          <span style={styles.spinner}>⟳</span> Checking Docker…
+          <span style={styles.spinner}>⟳</span> Detecting your environment…
         </div>
       );
     }
@@ -128,7 +140,19 @@ export function SetupScreen({ needs, theme, onComplete }: Props) {
           <span style={styles.successIcon}>✓</span>
           <div>
             <div style={styles.successTitle}>Docker is running</div>
-            <div style={styles.successSub}>You're all set</div>
+            <div style={styles.successSub}>Supports any GitHub tool</div>
+          </div>
+        </div>
+      );
+    }
+
+    if (hasHomebrew) {
+      return (
+        <div style={styles.successBox}>
+          <span style={styles.successIcon}>✓</span>
+          <div>
+            <div style={styles.successTitle}>Homebrew is available</div>
+            <div style={styles.successSub}>Works great for popular tools</div>
           </div>
         </div>
       );
@@ -136,20 +160,19 @@ export function SetupScreen({ needs, theme, onComplete }: Props) {
 
     // Docker not running — show appropriate CTA
     if (dockerInstalled === true) {
-      // Installed but not running
       return (
         <div style={styles.notRunningBlock}>
           <div style={styles.notRunningIcon}>🐳</div>
           <div style={styles.notRunningText}>
             <div style={styles.notRunningTitle}>Docker is installed but not running</div>
-            <div style={styles.notRunningDesc}>Click below to start it — takes about 10 seconds.</div>
+            <div style={styles.notRunningDesc}>Start it to use any GitHub tool.</div>
           </div>
           <button type="button" style={styles.primaryBtn} onClick={handleStartDocker}>
             Start Docker Desktop →
           </button>
           <div style={styles.waitingMsg}>
             <span style={styles.spinner}>⟳</span> Waiting for Docker to start…
-            <button type="button" style={styles.recheckBtn} onClick={checkDocker}>
+            <button type="button" style={styles.recheckBtn} onClick={() => void checkRuntime()}>
               Check again
             </button>
           </div>
@@ -157,38 +180,39 @@ export function SetupScreen({ needs, theme, onComplete }: Props) {
       );
     }
 
-    if (dockerInstalled === false) {
-      // Not installed
-      return (
-        <div style={styles.notInstalledBlock}>
-          <div style={styles.tabDesc}>
-            Docker lets us run tools safely on your computer. It's free and takes about 2 minutes to install.
-          </div>
-          <button type="button" style={styles.primaryBtn} onClick={handleDownloadDocker}>
-            Download Docker Desktop →
-          </button>
-          <div style={styles.alreadyInstalled}>
-            Already installed?{' '}
-            <button type="button" style={styles.linkBtn} onClick={checkDocker}>
-              Check again
-            </button>
-          </div>
-        </div>
-      );
-    }
-
-    // Still detecting — show both options
+    // Neither Docker nor Homebrew — show install options
     return (
       <div style={styles.notInstalledBlock}>
-        <button type="button" style={styles.primaryBtn} onClick={handleStartDocker}>
-          Start Docker Desktop →
-        </button>
-        <button type="button" style={styles.secondaryBtn} onClick={handleDownloadDocker}>
-          Download Docker Desktop
-        </button>
-        <button type="button" style={styles.recheckBtn} onClick={checkDocker}>
-          Check again
-        </button>
+        <div style={styles.tabDesc}>
+          CLUI needs <strong>Docker Desktop</strong> or <strong>Homebrew</strong> to run tools on your Mac.
+        </div>
+
+        <div style={styles.optionRow}>
+          <div style={styles.optionCard}>
+            <div style={styles.optionIcon}>🐳</div>
+            <div style={styles.optionTitle}>Docker Desktop</div>
+            <div style={styles.optionDesc}>Recommended — supports any tool from GitHub, maximum compatibility</div>
+            <button type="button" style={styles.primaryBtn} onClick={handleDownloadDocker}>
+              Download →
+            </button>
+          </div>
+          <div style={styles.optionDivider}>or</div>
+          <div style={styles.optionCard}>
+            <div style={styles.optionIcon}>🍺</div>
+            <div style={styles.optionTitle}>Homebrew</div>
+            <div style={styles.optionDesc}>Simpler — works for 90% of popular tools (ffmpeg, yt-dlp, etc.)</div>
+            <button type="button" style={styles.secondaryBtn} onClick={handleInstallHomebrew}>
+              Get Homebrew →
+            </button>
+          </div>
+        </div>
+
+        <div style={styles.alreadyInstalled}>
+          Already installed?{' '}
+          <button type="button" style={styles.linkBtn} onClick={() => void checkRuntime()}>
+            Check again
+          </button>
+        </div>
       </div>
     );
   }
@@ -208,11 +232,11 @@ export function SetupScreen({ needs, theme, onComplete }: Props) {
         <div style={styles.tabs}>
           <button
             type="button"
-            style={{ ...styles.tab, ...(tab === 'docker' ? styles.tabActive : {}) }}
-            onClick={() => setTab('docker')}
+            style={{ ...styles.tab, ...(tab === 'runtime' ? styles.tabActive : {}) }}
+            onClick={() => setTab('runtime')}
           >
-            <span style={styles.tabNum}>{dockerStatus === 'ok' ? '✓' : '1'}</span>
-            <span>Set up Docker</span>
+            <span style={styles.tabNum}>{(dockerStatus === 'ok' || hasHomebrew) ? '✓' : '1'}</span>
+            <span>Set up Runtime</span>
           </button>
           <div style={styles.tabConnector} />
           <button
@@ -225,24 +249,26 @@ export function SetupScreen({ needs, theme, onComplete }: Props) {
           </button>
         </div>
 
-        {/* Docker tab */}
-        {tab === 'docker' && (
+        {/* Runtime tab */}
+        {tab === 'runtime' && (
           <div style={styles.tabContent}>
             <div style={styles.tabTitle}>
-              {dockerInstalled === true && dockerStatus !== 'ok'
-                ? 'Start Docker'
-                : dockerInstalled === false
-                  ? 'Install Docker'
-                  : 'Docker setup'}
+              {dockerStatus === 'ok'
+                ? 'Docker is ready'
+                : hasHomebrew
+                  ? 'Homebrew is ready'
+                  : dockerInstalled === true
+                    ? 'Start Docker'
+                    : 'Install a runtime'}
             </div>
 
-            {renderDockerCTA()}
+            {renderRuntimeCTA()}
 
             <button
               type="button"
               style={styles.nextBtn}
               onClick={() => setTab('apikey')}
-              disabled={dockerStatus !== 'ok'}
+              disabled={dockerStatus !== 'ok' && !hasHomebrew}
             >
               Next →
             </button>
@@ -446,4 +472,17 @@ const styles: Record<string, React.CSSProperties> = {
     outline: 'none', width: '100%', boxSizing: 'border-box' as const,
   },
   validateMsg: { fontSize: 12, fontWeight: 600, marginTop: -6 },
+  optionRow: { display: 'flex', alignItems: 'flex-start', gap: 8 },
+  optionCard: {
+    flex: 1, display: 'flex', flexDirection: 'column', gap: 8,
+    padding: '12px 12px', borderRadius: 10,
+    border: '1px solid var(--border)', background: 'var(--surface-2)',
+  },
+  optionIcon: { fontSize: 22 },
+  optionTitle: { fontSize: 13, fontWeight: 700, color: 'var(--text)' },
+  optionDesc: { fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5, flex: 1 },
+  optionDivider: {
+    fontSize: 11, color: 'var(--text-muted)', fontWeight: 600,
+    paddingTop: 40, flexShrink: 0,
+  },
 };

@@ -4,16 +4,18 @@
 
 ## What is this project?
 
-**CLUI** (formerly GUI Bridge) is a desktop app (Electron) that lets non-technical users run any GitHub CLI tool through an auto-generated graphical interface. Users search for a project, install it into a Docker container, and the app analyzes the tool's CLI to generate a point-and-click UI.
+**CLUI** (formerly GUI Bridge) is a desktop app (Electron) that lets non-technical users run any GitHub CLI tool through an auto-generated graphical interface. Users search for a project, install it (via Docker or native package managers like Homebrew/pip/npm), and the app analyzes the tool's CLI to generate a point-and-click UI.
 
 ## Tech Stack
 
 - **App shell:** Electron (TypeScript) — Mac first, then Linux/Windows
 - **Frontend:** React + TypeScript (inside Electron renderer)
 - **Backend services:** Node.js/TypeScript (Electron main process)
-- **Containerization:** Docker (via dockerode)
+- **Containerization:** Docker (via dockerode) — optional; falls back to Homebrew/pip/npm/cargo
 - **CLI analysis:** LLM-powered (Claude API via Anthropic SDK)
 - **Package manager:** npm workspaces (monorepo)
+- **Bundler:** esbuild (main process) + Vite (renderer)
+- **Distribution:** electron-builder → `.dmg` (Mac), `.AppImage`/`.deb` (Linux)
 
 ## Project Structure
 
@@ -27,13 +29,22 @@ clui/                              # repo root (also Electron app root — "main
 ├── .gitignore
 ├── packages/
 │   ├── main/                      # Electron main process
+│   │   ├── build.mjs              # esbuild bundler (outputs dist/index.js + dist/preload.js)
 │   │   ├── src/
 │   │   │   ├── index.ts           # Electron entry (BrowserWindow, loads Vite dev server in dev)
 │   │   │   ├── preload.ts         # contextBridge API exposed to renderer
+│   │   │   ├── paths.ts           # Central path helper (userData, projects, scripts dirs)
 │   │   │   ├── docker/
 │   │   │   │   └── DockerManager.ts   # dockerode wrapper
 │   │   │   ├── executor/
-│   │   │   │   └── ExecutorBridge.ts  # buildCommand + collectInputFiles (Chunk 2)
+│   │   │   │   ├── IExecutor.ts        # Strategy interface
+│   │   │   │   ├── DockerExecutor.ts   # Runs commands in Docker containers
+│   │   │   │   ├── NativeExecutor.ts   # Runs commands via child_process (no Docker)
+│   │   │   │   ├── ExecutorRouter.ts   # Picks Docker or Native based on ProjectMeta
+│   │   │   │   └── ExecutorBridge.ts   # buildCommand + collectInputFiles
+│   │   │   ├── native/
+│   │   │   │   ├── KnownToolRegistry.ts  # 14 known tools with brew/pip/npm install cmds
+│   │   │   │   └── NativeInstallManager.ts # Detects + runs Homebrew/pip/npm/cargo installs
 │   │   │   └── ipc/
 │   │   │       └── handlers.ts    # ipcMain.handle registrations
 │   │   └── package.json
@@ -90,7 +101,8 @@ clui/                              # repo root (also Electron app root — "main
 | 4 | LLM-powered UI generation (Claude API) | **COMPLETE** |
 | 5 | Project browser + auto-setup | **COMPLETE** |
 | 6 | Polish, error handling, UX | **COMPLETE** |
-| 7+ | Tool chaining / pipelines (future) | NOT STARTED |
+| 7 | Standalone DMG + Docker-free native execution | **COMPLETE** |
+| 8+ | Tool chaining / pipelines (future) | NOT STARTED |
 
 ## Key Commands
 
@@ -104,12 +116,19 @@ npm run dev
 # Production build (all packages)
 npm run build
 
+# Package as distributable DMG (Mac)
+npm run package:mac        # builds both arm64 + x64 DMGs → dist-electron/
+
+# Package for Linux
+npm run package:linux      # builds AppImage + deb → dist-electron/
+
 # After editing packages/main TypeScript in dev, rebuild main and restart:
 npm run build -w packages/main
 # Then Ctrl-C and re-run npm run dev (or restart Electron only)
 ```
 
 > **Note:** Hot reload only applies to the renderer (Vite HMR). Changes to `packages/main` require a rebuild + Electron restart.
+> **Bundling:** The main process is bundled with esbuild (see `packages/main/build.mjs`). All dependencies including dockerode are inlined — no `node_modules` shipped in the packaged app.
 
 ## Conventions
 
@@ -169,7 +188,11 @@ The UI schema (see `shared/ui-schema.ts`) is the central contract. The analyzer 
 
 ## Environment
 
-- Anthropic API key: stored in `~/.gui-bridge/config.json` (for now, developer's own key)
-- Docker: must be installed and running on host (Docker Desktop for Mac)
-- Node: >= 20
-- Platform: macOS first (Darwin), then Linux, then Windows
+- **App data:** stored in `~/Library/Application Support/CLUI/` (macOS) via `app.getPath('userData')`
+  - Config: `config.json` (API key, provider, mockMode)
+  - Project schemas/metadata: `projects/{key}/`
+  - First launch migrates old `~/.gui-bridge/` data automatically
+- **Anthropic API key:** entered via the in-app setup screen (saved to userData config)
+- **Docker:** optional — app falls back to Homebrew/pip/npm/cargo for known tools
+- **Node:** >= 20
+- **Platform:** macOS first (Darwin), then Linux, then Windows

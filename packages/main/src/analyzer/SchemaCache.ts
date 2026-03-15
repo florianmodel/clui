@@ -1,13 +1,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import type { UISchema, CapabilityDump } from '@gui-bridge/shared';
+import { getProjectsDir } from '../paths.js';
 
 export class SchemaCache {
   private baseDir: string;
 
   constructor() {
-    this.baseDir = path.join(os.homedir(), '.gui-bridge', 'projects');
+    this.baseDir = getProjectsDir();
   }
 
   get(cacheKey: string): UISchema | null {

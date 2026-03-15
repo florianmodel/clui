@@ -5,6 +5,7 @@ const STAGE_LABELS: Record<string, string> = {
   cloning:    'Downloading tool…',
   detecting:  'Checking compatibility…',
   registry:   'Checking community templates…',
+  installing: 'Installing on your Mac…',
   building:   'Setting up environment…',
   analyzing:  'Learning the tool…',
   generating: 'Creating your interface…',
@@ -16,6 +17,7 @@ const STAGE_PROGRESS: Record<string, number> = {
   cloning:    10,
   detecting:  20,
   registry:   28,
+  installing: 45,
   building:   55,
   analyzing:  75,
   generating: 90,
@@ -124,7 +126,7 @@ export function InstallingScreen({ owner, repo, projectName, onComplete, onBack 
                       }} />
                       <span style={{ fontWeight: active ? 600 : 400 }}>{lbl}</span>
                       {active && stage !== 'complete' && (
-                        <span style={styles.spinner}>⟳</span>
+                        <span style={styles.spinner} />
                       )}
                       {done && <span style={styles.checkmark}>✓</span>}
                     </div>
@@ -184,11 +186,14 @@ const styles: Record<string, React.CSSProperties> = {
   },
   spinner: {
     display: 'inline-block',
-    animation: 'spin 1s linear infinite',
-    color: 'var(--accent)', marginLeft: 'auto',
+    width: 12, height: 12, borderRadius: '50%',
+    border: '2px solid var(--border)',
+    borderTopColor: 'var(--accent)',
+    animation: 'spin 0.7s linear infinite',
+    marginLeft: 'auto', flexShrink: 0,
   },
   checkmark: {
-    marginLeft: 'auto', color: 'var(--green)', fontSize: 12,
+    marginLeft: 'auto', color: 'var(--green)', fontSize: 12, flexShrink: 0,
   },
   errorIcon: { fontSize: 48, marginTop: 8 },
   errorTitle: { fontSize: 20, fontWeight: 700, color: 'var(--text)' },

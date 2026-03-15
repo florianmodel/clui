@@ -66,6 +66,8 @@ I'll give you a CapabilityDump — a structured analysis of a CLI tool including
 - **CRITICAL: Every {placeholder} in the command MUST exactly match a step's "id" field.** Never invent names. If a step has id "video_url", write {video_url} in the command — NOT {url_arg} or {url_flag}.
 - For toggle steps: write {step_id} in the command. It expands to --step-id when enabled and is omitted when disabled.
 - For **single** file_input steps: write /input/{step_id} in the command (expands to /input/filename at runtime).
+  WRONG: ffmpeg -i /input/input_video  <- "input_video" is bare text, not a placeholder — the file will never be found
+  RIGHT: ffmpeg -i /input/{input_video}  <- curly braces are required; {input_video} expands to the actual filename
 - For **multiple** file_input steps ("multiple": true): all selected files are mounted as flat files inside /input/. Iterate /input/ directly — do NOT reference {step_id} in any path.
   WRONG: [process('/input/' + '{' + 'step_id' + '}') for f in os.listdir('/input')]  <- {step_id} becomes '' leaving /input/ as a directory
   WRONG: os.listdir('/input/{step_id}')  <- {step_id} becomes filename, not a directory

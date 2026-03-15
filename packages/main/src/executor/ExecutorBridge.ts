@@ -37,8 +37,14 @@ export function buildCommand(workflow: Workflow, inputs: Record<string, unknown>
     }
   }
 
-  // Strip any remaining unfilled {placeholder} tokens (optional steps left empty)
-  // Also remove any leading/trailing whitespace left by stripped tokens
+  // Strip unfilled placeholders.  Two passes:
+  //
+  // Pass 1 — remove "flag + unfilled-value" pairs so dangling flags don't remain.
+  // Matches patterns like:  -crf {crf}  |  --quality {quality}  |  -preset {preset}
+  // This prevents ffmpeg/other tools seeing "-crf" with no value which causes parse errors.
+  cmd = cmd.replace(/\s+-{1,2}[\w-]+\s+\{[^}]+\}/g, '');
+  //
+  // Pass 2 — remove any remaining bare {placeholder} tokens (positional args, path suffixes, etc.)
   cmd = cmd.replace(/\s*\{[^}]+\}/g, '').trim();
 
   return cmd;

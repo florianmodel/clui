@@ -1,11 +1,14 @@
 import { app, BrowserWindow } from 'electron';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
 import { registerIpcHandlers } from './ipc/index.js';
 import { buildAppMenu } from './menu.js';
 import { ConfigManager } from './config/ConfigManager.js';
 import { IPCChannel } from '@gui-bridge/shared';
 import type { DockerStatusEvent } from '@gui-bridge/shared';
 import { DockerHealthMonitor } from './docker/DockerHealthMonitor.js';
+import { getUserDataDir } from './paths.js';
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 const configManager = new ConfigManager();
@@ -66,7 +69,27 @@ function createWindow(): void {
   });
 }
 
+/**
+ * One-time migration: copy ~/.gui-bridge/ → app userData dir if userData is empty.
+ * Runs silently — any failure is ignored to avoid blocking app startup.
+ */
+function migrateOldDataIfNeeded(): void {
+  try {
+    const oldDir = path.join(os.homedir(), '.gui-bridge');
+    const newDir = getUserDataDir();
+
+    if (!fs.existsSync(oldDir)) return;
+    if (fs.existsSync(path.join(newDir, 'projects')) || fs.existsSync(path.join(newDir, 'config.json'))) return;
+
+    fs.mkdirSync(newDir, { recursive: true });
+    fs.cpSync(oldDir, newDir, { recursive: true });
+  } catch {
+    // Migration failure is non-fatal — app continues with fresh data dir
+  }
+}
+
 app.whenReady().then(() => {
+  migrateOldDataIfNeeded();
   registerIpcHandlers(getWindow);
   buildAppMenu(getWindow);
   createWindow();

@@ -60,6 +60,7 @@ import type {
   AppConfirmResponse,
   DockerStatusEvent,
   InstallProgressEvent,
+  NativeCapabilities,
 } from '@gui-bridge/shared';
 
 declare global {
@@ -109,6 +110,9 @@ declare global {
       github: {
         search: (req: GithubSearchRequest) => Promise<GithubSearchResponse>;
         recommend: (req: GithubRecommendRequest) => Promise<GithubRecommendResponse>;
+      };
+      native: {
+        checkCapabilities: () => Promise<NativeCapabilities>;
       };
       projects: {
         install: (req: ProjectInstallRequest) => Promise<ProjectInstallResponse>;

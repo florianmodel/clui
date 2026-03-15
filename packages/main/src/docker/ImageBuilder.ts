@@ -2,72 +2,10 @@ import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { StackInfo } from '../analyzer/types.js';
+import { KnownToolRegistry } from '../native/KnownToolRegistry.js';
 
-// ── Known-tool Dockerfiles ────────────────────────────────────────────────────
-// For popular CLI tools whose GitHub repos don't ship a Dockerfile (or ship one
-// that builds from source), we use a curated Dockerfile that installs the binary
-// via the system package manager. Keyed by lowercase `owner--repo`.
-const KNOWN_TOOL_DOCKERFILES: Record<string, string> = {
-  'ffmpeg--ffmpeg': `FROM ubuntu:24.04
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
-WORKDIR /app
-`,
-  'handbrake--handbrake': `FROM ubuntu:24.04
-RUN apt-get update && apt-get install -y --no-install-recommends handbrake-cli && rm -rf /var/lib/apt/lists/*
-WORKDIR /app
-`,
-  'imagemagick--imagemagick': `FROM ubuntu:24.04
-RUN apt-get update && apt-get install -y --no-install-recommends imagemagick && rm -rf /var/lib/apt/lists/*
-WORKDIR /app
-`,
-  'yt-dlp--yt-dlp': `FROM python:3.12-slim
-RUN pip install --no-cache-dir yt-dlp
-WORKDIR /app
-`,
-  'openai--whisper': `FROM python:3.12-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir openai-whisper
-WORKDIR /app
-`,
-  'jgm--pandoc': `FROM ubuntu:24.04
-RUN apt-get update && apt-get install -y --no-install-recommends pandoc && rm -rf /var/lib/apt/lists/*
-WORKDIR /app
-`,
-  'tesseract-ocr--tesseract': `FROM ubuntu:24.04
-RUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr && rm -rf /var/lib/apt/lists/*
-WORKDIR /app
-`,
-  'burntsushi--ripgrep': `FROM ubuntu:24.04
-RUN apt-get update && apt-get install -y --no-install-recommends ripgrep && rm -rf /var/lib/apt/lists/*
-WORKDIR /app
-`,
-  'svg--svgo': `FROM node:20-slim
-RUN npm install -g svgo
-WORKDIR /app
-`,
-  'py-pdf--pypdf': `FROM python:3.12-slim
-RUN pip install --no-cache-dir pypdf
-WORKDIR /app
-`,
-  'saulpw--visidata': `FROM python:3.12-slim
-RUN pip install --no-cache-dir visidata
-WORKDIR /app
-`,
-  'mozilla--mozjpeg': `FROM ubuntu:24.04
-RUN apt-get update && apt-get install -y --no-install-recommends libjpeg-turbo-progs imagemagick && rm -rf /var/lib/apt/lists/*
-WORKDIR /app
-`,
-  'kornelski--gifski': `FROM ubuntu:24.04
-RUN apt-get update && apt-get install -y --no-install-recommends cargo && rm -rf /var/lib/apt/lists/*
-RUN cargo install gifski
-ENV PATH="/root/.cargo/bin:$PATH"
-WORKDIR /app
-`,
-  'lovell--sharp': `FROM node:20-slim
-RUN npm install -g sharp-cli
-WORKDIR /app
-`,
-};
+// Dockerfile map sourced from KnownToolRegistry (single source of truth)
+const KNOWN_TOOL_DOCKERFILES = KnownToolRegistry.toDockerfileMap();
 
 /**
  * Builds Docker images for installed projects.

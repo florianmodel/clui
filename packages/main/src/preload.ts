@@ -59,6 +59,7 @@ import {
   type AppConfirmResponse,
   type DockerStatusEvent,
   type InstallProgressEvent,
+  type NativeCapabilities,
 } from '@gui-bridge/shared';
 
 // ── Drag-and-drop path resolution (Electron 32+) ──────────────────────────────
@@ -132,6 +133,9 @@ export interface ElectronAPI {
   github: {
     search: (req: GithubSearchRequest) => Promise<GithubSearchResponse>;
     recommend: (req: GithubRecommendRequest) => Promise<GithubRecommendResponse>;
+  };
+  native: {
+    checkCapabilities: () => Promise<NativeCapabilities>;
   };
   projects: {
     install: (req: ProjectInstallRequest) => Promise<ProjectInstallResponse>;
@@ -237,6 +241,11 @@ const api: ElectronAPI = {
       ipcRenderer.invoke(IPCChannel.GITHUB_SEARCH, req),
     recommend: (req: GithubRecommendRequest) =>
       ipcRenderer.invoke(IPCChannel.GITHUB_RECOMMEND, req),
+  },
+
+  native: {
+    checkCapabilities: (): Promise<NativeCapabilities> =>
+      ipcRenderer.invoke(IPCChannel.NATIVE_CHECK_CAPABILITIES),
   },
 
   projects: {

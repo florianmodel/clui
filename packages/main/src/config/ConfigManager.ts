@@ -1,14 +1,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import type { AppConfig } from '@gui-bridge/shared';
+import { getConfigPath } from '../paths.js';
 
 export class ConfigManager {
   private configPath: string;
 
   constructor() {
-    const configDir = path.join(os.homedir(), '.gui-bridge');
-    this.configPath = path.join(configDir, 'config.json');
+    this.configPath = getConfigPath();
   }
 
   getConfig(): AppConfig {

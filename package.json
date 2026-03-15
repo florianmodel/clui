@@ -1,5 +1,8 @@
 {
-  "name": "gui-bridge",
+  "name": "clui",
+  "version": "1.0.0",
+  "description": "Turn any GitHub CLI tool into a point-and-click GUI",
+  "author": "Florian Model",
   "private": true,
   "main": "packages/main/dist/index.js",
   "workspaces": [
@@ -8,10 +11,53 @@
   "scripts": {
     "dev": "npm run build -w packages/shared && npm run build -w packages/main && concurrently -k -n renderer,electron -c cyan,yellow \"npm run dev -w packages/renderer\" \"wait-on http://localhost:5173 && NODE_ENV=development electron .\"",
     "build": "npm run build -w packages/shared && npm run build -w packages/renderer && npm run build -w packages/main",
+    "package:mac": "npm run build && electron-builder --mac",
+    "package:linux": "npm run build && electron-builder --linux",
     "lint": "eslint \"packages/*/src/**/*.{ts,tsx}\""
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
+    "electron-builder": "^25.1.8",
     "wait-on": "^8.0.3"
+  },
+  "build": {
+    "appId": "com.clui.app",
+    "productName": "CLUI",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["arm64", "x64"] }
+      ],
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.icns"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Development"
+    },
+    "dmg": {
+      "contents": [
+        { "x": 410, "y": 150, "type": "link", "path": "/Applications" },
+        { "x": 130, "y": 150, "type": "file" }
+      ]
+    },
+    "files": [
+      "packages/main/dist/index.js",
+      "packages/main/dist/index.js.map",
+      "packages/main/dist/preload.js",
+      "packages/main/dist/preload.js.map",
+      "packages/renderer/dist/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "packages/main/src/analyzer/analyzer-scripts",
+        "to": "analyzer-scripts",
+        "filter": ["**/*.py"]
+      }
+    ],
+    "asar": true
   }
 }

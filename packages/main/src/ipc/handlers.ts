@@ -1,7 +1,6 @@
 import { ipcMain, BrowserWindow, shell, dialog, app, clipboard } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import {
   IPCChannel,
   type DockerBuildRequest,
@@ -66,13 +65,15 @@ import {
 } from '@gui-bridge/shared';
 
 import { DockerManager } from '../docker/index.js';
-import { buildCommand, collectInputFiles } from '../executor/index.js';
+import { buildCommand, collectInputFiles, ExecutorRouter, DockerExecutor } from '../executor/index.js';
 import { Analyzer } from '../analyzer/index.js';
 import { LLMClient, MockLLMClient, type ILLMClient } from '../analyzer/LLMClient.js';
 import { OpenAIClient } from '../analyzer/OpenAIClient.js';
-import type { AppConfig } from '@gui-bridge/shared';
+import type { AppConfig, NativeCapabilities } from '@gui-bridge/shared';
 import { SchemaCache } from '../analyzer/SchemaCache.js';
 import { ConfigManager } from '../config/ConfigManager.js';
+import { NativeInstallManager } from '../native/index.js';
+import { getScriptsDir, getProjectsDir } from '../paths.js';
 import { buildFixCommandPrompt } from '../analyzer/prompts/fix-command.js';
 import { buildAddWorkflowPrompt } from '../analyzer/prompts/add-workflow.js';
 import { buildRepoRecommendationPrompt } from '../analyzer/prompts/recommend-repos.js';
@@ -93,6 +94,7 @@ function makeLLMClient(config: AppConfig): ILLMClient {
 }
 
 const docker = new DockerManager();
+const executorRouter = new ExecutorRouter(docker);
 const configManager = new ConfigManager();
 const schemaCache = new SchemaCache();
 const githubClient = new GitHubClient();
@@ -124,9 +126,11 @@ function resolveAppPath(p: string): string {
 
 export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void {
 
-  // ProjectManager is instantiated here so app.getAppPath() is available
-  const scriptsDir = path.join(app.getAppPath(), 'packages/main/src/analyzer/analyzer-scripts');
+  const scriptsDir = getScriptsDir();
   const projectManager = new ProjectManager(docker, scriptsDir);
+
+  // Track the currently running executor so exec:cancel works regardless of mode
+  let activeExecutor: import('../executor/IExecutor.js').IExecutor | null = null;
 
   // ── app:getPath ────────────────────────────────────────────────────────
   ipcMain.handle(IPCChannel.APP_GET_PATH, (_event, name: string): string => {
@@ -136,6 +140,12 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   // ── docker:health ──────────────────────────────────────────────────────
   ipcMain.handle(IPCChannel.DOCKER_HEALTH, async (): Promise<DockerHealthResponse> => {
     return docker.checkHealth();
+  });
+
+  // ── native:checkCapabilities ────────────────────────────────────────────
+  ipcMain.handle(IPCChannel.NATIVE_CHECK_CAPABILITIES, async (): Promise<NativeCapabilities> => {
+    const nativeMgr = new NativeInstallManager();
+    return nativeMgr.detectCapabilities();
   });
 
   // ── docker:build ───────────────────────────────────────────────────────
@@ -234,7 +244,11 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
   // ── exec:cancel ────────────────────────────────────────────────────────
   ipcMain.handle(IPCChannel.EXEC_CANCEL, async (): Promise<void> => {
-    await docker.cancelRunning();
+    if (activeExecutor) {
+      await activeExecutor.cancel();
+    } else {
+      await docker.cancelRunning(); // fallback for exec:run (low-level)
+    }
   });
 
   // ── file:pick ──────────────────────────────────────────────────────────
@@ -297,7 +311,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
   // ── exec:schema-run ────────────────────────────────────────────────────
   // High-level execution: receives workflow + inputs, builds command,
-  // auto-builds image if needed, runs container, streams logs.
+  // routes to the right executor (Docker or Native), streams logs.
   ipcMain.handle(
     IPCChannel.EXEC_SCHEMA_RUN,
     async (_event, req: ExecSchemaRunRequest): Promise<ExecRunResponse> => {
@@ -309,24 +323,29 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         win?.webContents.send(IPCChannel.EXEC_LOG, event);
       };
 
-      // Build or reuse Docker image
-      if (req.dockerfilePath) {
+      // Resolve executor: use project meta if available, otherwise fall back to DockerExecutor
+      let executor;
+      if (req.projectId) {
+        const meta = projectManager.getMeta(req.projectId);
+        executor = meta
+          ? await executorRouter.forProject(meta)
+          : new DockerExecutor(docker, req.dockerImage);
+      } else {
+        executor = new DockerExecutor(docker, req.dockerImage);
+      }
+
+      activeExecutor = executor;
+      sendLog('system', `Executor: ${executor.name}`);
+
+      // For Docker executor: build image if needed (native skips this)
+      if (executor.name === 'Docker' && req.dockerfilePath) {
         const exists = await docker.imageExists(req.dockerImage);
         if (!exists) {
           const dockerfilePath = resolveAppPath(req.dockerfilePath);
           const contextPath = resolveAppPath('.');
-          const buildResult = await docker.buildImage(
-            req.dockerImage,
-            dockerfilePath,
-            contextPath,
-            sendLog,
-          );
+          const buildResult = await docker.buildImage(req.dockerImage, dockerfilePath, contextPath, sendLog);
           if (!buildResult.ok) {
-            const complete: ExecCompleteEvent = {
-              exitCode: 1,
-              outputFiles: [],
-              error: buildResult.error,
-            };
+            const complete: ExecCompleteEvent = { exitCode: 1, outputFiles: [], error: buildResult.error };
             win?.webContents.send(IPCChannel.EXEC_COMPLETE, complete);
             return { ok: false, error: buildResult.error };
           }
@@ -339,50 +358,22 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       const builtCommand = buildCommand(req.workflow, req.inputs);
       sendLog('system', `Command: ${builtCommand}`);
 
-      // Collect input files for volume mount
       const inputFilePaths = collectInputFiles(req.workflow, req.inputs);
 
-      // Prepare directories
-      const tempOutputDir = docker.createTempDir('output');
-      let inputDir: string | undefined;
-      let ownedInput = false;
-
-      if (inputFilePaths.length > 0) {
-        inputDir = docker.createTempDir('input');
-        ownedInput = true;
-        for (const src of inputFilePaths) {
-          const dest = path.join(inputDir, path.basename(src));
-          fs.copyFileSync(src, dest);
-        }
-      }
-
       try {
-        const result = await docker.runCommand(
-          req.dockerImage,
-          [builtCommand],
-          { inputDir, outputDir: tempOutputDir, useShell: true, network: 'bridge' },
+        const result = await executor.run(
+          builtCommand,
+          { inputFiles: inputFilePaths, outputDir: req.outputDir },
           sendLog,
         );
 
-        // Copy output files to user's chosen directory (or keep in temp dir)
-        let outputFiles = result.outputFiles;
-        if (req.outputDir && result.outputFiles.length > 0) {
-          fs.mkdirSync(req.outputDir, { recursive: true });
-          outputFiles = result.outputFiles.map((src) => {
-            const dest = path.join(req.outputDir!, path.basename(src));
-            fs.copyFileSync(src, dest);
-            return dest;
-          });
-        }
-
         const complete: ExecCompleteEvent = {
           exitCode: result.exitCode,
-          outputFiles,
+          outputFiles: result.outputFiles,
           error: result.error,
         };
         win?.webContents.send(IPCChannel.EXEC_COMPLETE, complete);
 
-        // Persist run to history
         if (req.projectId) {
           historyStore.append(req.projectId, {
             id: String(Date.now()),
@@ -392,7 +383,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
             durationMs: Date.now() - startedAt,
             success: result.exitCode === 0,
             exitCode: result.exitCode,
-            outputFiles,
+            outputFiles: result.outputFiles,
           });
         }
 
@@ -419,8 +410,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
         return { ok: false, error: msg };
       } finally {
-        if (ownedInput && inputDir) docker.removeTempDir(inputDir);
-        docker.removeTempDir(tempOutputDir);
+        activeExecutor = null;
       }
     },
   );
@@ -430,10 +420,6 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     IPCChannel.ANALYZER_RUN,
     async (_event, req: AnalyzerRunRequest): Promise<AnalyzerRunResponse> => {
       try {
-        const scriptsDir = path.join(
-          app.getAppPath(),
-          'packages/main/src/analyzer/analyzer-scripts',
-        );
         const analyzer = new Analyzer(docker, scriptsDir);
         const repoDir = resolveAppPath(req.repoDir);
         const dump = await analyzer.analyze(repoDir, req.dockerImage);
@@ -486,10 +472,6 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
         const llmClient = makeLLMClient(config);
 
-        const scriptsDir = path.join(
-          app.getAppPath(),
-          'packages/main/src/analyzer/analyzer-scripts',
-        );
         const analyzer = new Analyzer(docker, scriptsDir);
 
         let schema;
@@ -740,7 +722,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         );
 
         // Persist the improved schema so it loads correctly next time
-        const schemaPath = path.join(os.homedir(), '.gui-bridge', 'projects', req.projectId, 'schema.json');
+        const schemaPath = path.join(getProjectsDir(), req.projectId, 'schema.json');
         fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
         fs.writeFileSync(schemaPath, JSON.stringify(refined, null, 2), 'utf8');
 
@@ -811,7 +793,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         };
 
         // Persist updated schema
-        const schemaPath = path.join(os.homedir(), '.gui-bridge', 'projects', req.projectId, 'schema.json');
+        const schemaPath = path.join(getProjectsDir(), req.projectId, 'schema.json');
         fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
         fs.writeFileSync(schemaPath, JSON.stringify(updatedSchema, null, 2), 'utf8');
 

@@ -1,6 +1,5 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import type {
@@ -15,8 +14,11 @@ import { ImageBuilder } from '../docker/ImageBuilder.js';
 import { ProjectCloner } from '../github/ProjectCloner.js';
 import { StackDetector } from '../analyzer/StackDetector.js';
 import { Analyzer } from '../analyzer/Analyzer.js';
+import { NativeAnalyzer } from '../analyzer/NativeAnalyzer.js';
 import type { ILLMClient } from '../analyzer/LLMClient.js';
 import { TemplateRegistry } from '../registry/index.js';
+import { KnownToolRegistry, NativeInstallManager } from '../native/index.js';
+import { getProjectsDir } from '../paths.js';
 
 export class ProjectManager {
   private projectsDir: string;
@@ -24,13 +26,15 @@ export class ProjectManager {
   private imageBuilder: ImageBuilder;
   private docker: DockerManager;
   private registry: TemplateRegistry;
+  private nativeInstall: NativeInstallManager;
 
   constructor(docker: DockerManager, private scriptsDir: string) {
     this.docker = docker;
-    this.projectsDir = path.join(os.homedir(), '.gui-bridge', 'projects');
+    this.projectsDir = getProjectsDir();
     this.cloner = new ProjectCloner();
     this.imageBuilder = new ImageBuilder();
     this.registry = new TemplateRegistry();
+    this.nativeInstall = new NativeInstallManager();
   }
 
   /**
@@ -80,10 +84,15 @@ export class ProjectManager {
         fs.writeFileSync(schemaPath, JSON.stringify(registryHit.schema, null, 2), 'utf8');
 
         // Still need Docker image for execution
-        send('building', 'Building Docker image (this may take a few minutes)…');
-        await this.imageBuilder.buildForProject(projectId, repoDir, stack, (line) => {
-          send('building', line);
-        });
+        const imageAlreadyBuilt = await this.docker.imageExists(imageTag);
+        if (imageAlreadyBuilt) {
+          send('building', 'Docker image already built — reusing existing image ✓');
+        } else {
+          send('building', 'Building Docker image (this may take a few minutes)…');
+          await this.imageBuilder.buildForProject(projectId, repoDir, stack, (line) => {
+            send('building', line);
+          });
+        }
 
         const meta: ProjectMeta = {
           projectId,
@@ -108,16 +117,69 @@ export class ProjectManager {
       }
 
       // Registry miss — run full pipeline
-      // Step 3: Build Docker image
-      send('building', 'Building Docker image (this may take a few minutes)…');
-      await this.imageBuilder.buildForProject(projectId, repoDir, stack, (line) => {
-        send('building', line);
-      });
+      // Decide: native or Docker?
+      const knownEntry = KnownToolRegistry.lookup(projectId);
+      const dockerHealth = await this.docker.checkHealth();
+      const useNative = !!knownEntry && !dockerHealth.ok;
+
+      let nativeBinary: string | undefined;
+      let nativeVersion: string | undefined;
+
+      if (useNative) {
+        // Native path: install via brew/pip/npm/cargo instead of Docker
+        send('installing', `Checking if ${knownEntry!.binary} is already installed…`);
+        const alreadyInstalled = await this.nativeInstall.isInstalled(knownEntry!.binary, knownEntry!.verifyArgs);
+
+        if (!alreadyInstalled.installed) {
+          const pm = await this.nativeInstall.pickPackageManager(knownEntry!.install);
+          if (!pm) {
+            throw new Error(
+              `Cannot install ${knownEntry!.binary}: no supported package manager found. ` +
+              `Install Homebrew (macOS) or Docker Desktop and try again.`,
+            );
+          }
+          send('installing', `Installing ${knownEntry!.binary} via ${pm}…`);
+          const result = await this.nativeInstall.install(
+            knownEntry!,
+            (stream, line) => send('installing', line),
+          );
+          if (!result.ok) {
+            throw new Error(`Installation failed: ${result.error}`);
+          }
+        } else {
+          send('installing', `${knownEntry!.binary} already installed (${alreadyInstalled.version ?? 'ok'}) ✓`);
+        }
+
+        const verified = await this.nativeInstall.verify(knownEntry!);
+        if (!verified) {
+          throw new Error(`Could not verify ${knownEntry!.binary} after install. Please check your installation.`);
+        }
+        nativeBinary = knownEntry!.binary;
+        nativeVersion = verified;
+        send('installing', `${knownEntry!.binary} ${verified} ready ✓`);
+      } else {
+        // Step 3: Build Docker image (skip if already built)
+        const imageAlreadyBuilt = await this.docker.imageExists(imageTag);
+        if (imageAlreadyBuilt) {
+          send('building', 'Docker image already built — reusing existing image ✓');
+        } else {
+          send('building', 'Building Docker image (this may take a few minutes)…');
+          await this.imageBuilder.buildForProject(projectId, repoDir, stack, (line) => {
+            send('building', line);
+          });
+        }
+      }
 
       // Step 4: Analyze CLI
       send('analyzing', 'Analyzing CLI interface…');
-      const analyzer = new Analyzer(this.docker, this.scriptsDir);
-      const dump = await analyzer.analyze(repoDir, imageTag);
+      let dump;
+      if (useNative && nativeBinary) {
+        const nativeAnalyzer = new NativeAnalyzer(this.scriptsDir);
+        dump = await nativeAnalyzer.analyze(repoDir, nativeBinary);
+      } else {
+        const analyzer = new Analyzer(this.docker, this.scriptsDir);
+        dump = await analyzer.analyze(repoDir, imageTag);
+      }
       send('analyzing', `Found ${dump.arguments.length} arguments, ${dump.subcommands.length} subcommands`);
 
       // Step 5: Generate UI schema (only if LLM client available)
@@ -125,10 +187,13 @@ export class ProjectManager {
       let status: ProjectStatus = 'no-schema';
       let schemaSource: ProjectMeta['schemaSource'];
 
+      // For native mode, use 'native:{binary}' as the schema's dockerImage sentinel
+      const schemaImageKey = useNative && nativeBinary ? `native:${nativeBinary}` : imageTag;
+
       if (llmClient) {
         send('generating', 'Generating interface with AI…');
         try {
-          const schema = await llmClient.generateUISchema(dump, imageTag);
+          const schema = await llmClient.generateUISchema(dump, schemaImageKey);
           schemaPath = path.join(this.projectsDir, projectId, 'schema.json');
           fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
           fs.writeFileSync(schemaPath, JSON.stringify(schema, null, 2), 'utf8');
@@ -159,6 +224,11 @@ export class ProjectManager {
         schemaPath,
         commitSha,
         schemaSource,
+        ...(useNative && nativeBinary ? {
+          executionMode: 'native' as const,
+          nativeBinary,
+          nativeVersion,
+        } : {}),
       };
 
       this.saveMeta(meta);
@@ -245,10 +315,33 @@ export class ProjectManager {
     const meta = this.getMeta(projectId);
     if (!meta?.schemaPath) return null;
     try {
-      return JSON.parse(fs.readFileSync(meta.schemaPath, 'utf8')) as UISchema;
+      const schema = JSON.parse(fs.readFileSync(meta.schemaPath, 'utf8')) as UISchema;
+      // Validate that file_input steps have proper {step_id} placeholders in command templates.
+      // The LLM occasionally forgets the curly braces (e.g. writes /input/step_id instead of
+      // /input/{step_id}), making input file substitution silently fail at runtime.
+      if (!this.isSchemaValid(schema)) {
+        // Invalidate so the user is prompted to regenerate
+        fs.unlinkSync(meta.schemaPath);
+        this.saveMeta({ ...meta, status: 'no-schema', schemaPath: undefined });
+        return null;
+      }
+      return schema;
     } catch {
       return null;
     }
+  }
+
+  /** Returns false if any non-multiple file_input step lacks a {step_id} in any workflow command. */
+  private isSchemaValid(schema: UISchema): boolean {
+    for (const workflow of schema.workflows) {
+      const cmd = workflow.execute?.command ?? '';
+      for (const step of workflow.steps) {
+        if (step.type === 'file_input' && !step.multiple) {
+          if (!cmd.includes(`{${step.id}}`)) return false;
+        }
+      }
+    }
+    return true;
   }
 
   async uninstall(projectId: string): Promise<void> {
