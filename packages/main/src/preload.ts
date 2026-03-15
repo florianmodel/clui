@@ -57,6 +57,7 @@ import {
   type FileGetInfoResponse,
   type AppConfirmRequest,
   type AppConfirmResponse,
+  type AppNotifyRequest,
   type DockerStatusEvent,
   type InstallProgressEvent,
   type NativeCapabilities,
@@ -90,6 +91,7 @@ let lastDroppedPaths: string[] = [];
 export interface ElectronAPI {
   app: {
     getDesktopPath: () => Promise<string>;
+    notify: (req: AppNotifyRequest) => Promise<void>;
   };
   docker: {
     checkHealth: () => Promise<DockerHealthResponse>;
@@ -165,6 +167,7 @@ export interface ElectronAPI {
 const api: ElectronAPI = {
   app: {
     getDesktopPath: () => ipcRenderer.invoke(IPCChannel.APP_GET_PATH, 'desktop'),
+    notify: (req: AppNotifyRequest) => ipcRenderer.invoke(IPCChannel.APP_NOTIFY, req),
   },
 
   docker: {

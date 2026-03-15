@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, shell, dialog, app, clipboard } from 'electron';
+import { ipcMain, BrowserWindow, shell, dialog, app, clipboard, Notification } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -61,6 +61,7 @@ import {
   type FileType,
   type AppConfirmRequest,
   type AppConfirmResponse,
+  type AppNotifyRequest,
   type InstallProgressEvent,
 } from '@gui-bridge/shared';
 
@@ -122,6 +123,13 @@ function resolveAppPath(p: string): string {
   if (path.isAbsolute(p)) return p;
   // app.getAppPath() returns the project root (where root package.json lives)
   return path.resolve(app.getAppPath(), p);
+}
+
+/** Fire a system notification if the platform supports it. */
+function notify(title: string, body: string): void {
+  if (Notification.isSupported()) {
+    new Notification({ title, body }).show();
+  }
 }
 
 export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void {
@@ -374,6 +382,12 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         };
         win?.webContents.send(IPCChannel.EXEC_COMPLETE, complete);
 
+        if (result.exitCode === 0) {
+          notify(`${req.workflow.name} complete`, `Finished successfully — ${result.outputFiles.length} output file(s).`);
+        } else {
+          notify(`${req.workflow.name} failed`, `Exited with code ${result.exitCode}.`);
+        }
+
         if (req.projectId) {
           historyStore.append(req.projectId, {
             id: String(Date.now()),
@@ -393,6 +407,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         sendLog('system', `Error: ${msg}`);
         const complete: ExecCompleteEvent = { exitCode: -1, outputFiles: [], error: msg };
         win?.webContents.send(IPCChannel.EXEC_COMPLETE, complete);
+        notify(`${req.workflow.name} failed`, msg.slice(0, 100));
 
         if (req.projectId) {
           historyStore.append(req.projectId, {
@@ -592,9 +607,11 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           sendProgress,
         );
 
+        notify(`${req.owner}/${req.repo} ready`, 'Tool installed and ready to use.');
         return { ok: true, meta };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
+        notify(`${req.owner}/${req.repo} install failed`, msg.slice(0, 100));
         return { ok: false, error: msg };
       }
     },
@@ -691,6 +708,11 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   // ── app:clipboardWrite ─────────────────────────────────────────────────
   ipcMain.handle(IPCChannel.APP_CLIPBOARD_WRITE, (_event, text: string): void => {
     clipboard.writeText(text);
+  });
+
+  // ── app:notify ─────────────────────────────────────────────────────────
+  ipcMain.handle(IPCChannel.APP_NOTIFY, (_event, req: AppNotifyRequest): void => {
+    notify(req.title, req.body);
   });
 
   // ── project:improve ────────────────────────────────────────────────────

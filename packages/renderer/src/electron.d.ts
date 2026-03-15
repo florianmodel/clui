@@ -58,6 +58,7 @@ import type {
   FileGetInfoResponse,
   AppConfirmRequest,
   AppConfirmResponse,
+  AppNotifyRequest,
   DockerStatusEvent,
   InstallProgressEvent,
   NativeCapabilities,
@@ -68,6 +69,7 @@ declare global {
     electronAPI: {
       app: {
         getDesktopPath: () => Promise<string>;
+        notify: (req: AppNotifyRequest) => Promise<void>;
       };
       docker: {
         checkHealth: () => Promise<DockerHealthResponse>;

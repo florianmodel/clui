@@ -73,6 +73,7 @@ export enum IPCChannel {
   APP_GET_PATH = 'app:getPath',
   APP_CONFIRM = 'app:confirm',
   APP_CLIPBOARD_WRITE = 'app:clipboardWrite',
+  APP_NOTIFY = 'app:notify',
 
   // Files — request/response
   FILE_PICK = 'file:pick',
@@ -458,6 +459,11 @@ export interface AppConfirmRequest {
 
 export interface AppConfirmResponse {
   confirmed: boolean;
+}
+
+export interface AppNotifyRequest {
+  title: string;
+  body: string;
 }
 
 // ── Workflow add (LLM-powered) ─────────────────────────────────────────────────
