@@ -9,8 +9,12 @@ const EXAMPLE_PROMPTS = [
   'Convert between image formats',
 ];
 
-// 3 chips shown at a time
-const CHIP_PROMPTS = EXAMPLE_PROMPTS.slice(0, 3);
+// Short labels for the chips (must fit on one line)
+const CHIP_PROMPTS: Array<{ label: string; intent: string }> = [
+  { label: '🎬 Compress video',  intent: 'Compress a video for the web' },
+  { label: '📄 PDF to images',   intent: 'Convert PDF pages to images' },
+  { label: '🖼️ Resize photos',   intent: 'Resize a batch of photos' },
+];
 
 interface Props {
   installedProjects: ProjectMeta[];
@@ -99,19 +103,19 @@ export function WelcomeScreen({ installedProjects, onIntent, onOpenProject }: Pr
 
         {/* Example chips — 3, single row, no wrap */}
         <div style={styles.chips}>
-          {CHIP_PROMPTS.map((prompt) => (
+          {CHIP_PROMPTS.map((chip) => (
             <button
-              key={prompt}
+              key={chip.label}
               type="button"
               style={{
                 ...styles.chip,
-                ...(hoveredChip === prompt ? styles.chipHovered : {}),
+                ...(hoveredChip === chip.label ? styles.chipHovered : {}),
               }}
-              onClick={() => handlePromptClick(prompt)}
-              onMouseEnter={() => setHoveredChip(prompt)}
+              onClick={() => handlePromptClick(chip.intent)}
+              onMouseEnter={() => setHoveredChip(chip.label)}
               onMouseLeave={() => setHoveredChip(null)}
             >
-              {prompt}
+              {chip.label}
             </button>
           ))}
         </div>
@@ -225,7 +229,7 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis',
   },
   chipHovered: {
-    borderColor: 'var(--accent)',
+    border: '1px solid var(--accent)',
     color: 'var(--accent)',
     background: 'rgba(var(--accent-rgb), 0.06)',
   },
@@ -245,7 +249,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'inherit',
   },
   toolCardHovered: {
-    borderColor: 'var(--accent)',
+    border: '1px solid var(--accent)',
     background: 'var(--surface-2)',
   },
   toolIcon: { fontSize: 18, flexShrink: 0 },
