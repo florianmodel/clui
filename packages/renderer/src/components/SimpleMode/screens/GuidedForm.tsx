@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import type { UISchema, Step, ExecLogEvent, ExecCompleteEvent } from '@gui-bridge/shared';
 import { DragDropFile } from '../components/DragDropFile.js';
 
@@ -23,6 +23,7 @@ export function GuidedForm({ schema, projectId, schemaSource, onResult, onBack }
   const [runState, setRunState] = useState<RunState>('idle');
   const [runError, setRunError] = useState('');
   const [logs, setLogs] = useState<ExecLogEvent[]>([]);
+  const [showErrorLogs, setShowErrorLogs] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -129,10 +130,12 @@ export function GuidedForm({ schema, projectId, schemaSource, onResult, onBack }
     }
   }
 
-  function handleRetry() {
+  const handleRetry = useCallback(() => {
     setRunState('idle');
     setRunError('');
-  }
+    setShowErrorLogs(false);
+    setLogs([]);
+  }, []);
 
   // Running overlay
   if (runState === 'running') {
@@ -173,6 +176,32 @@ export function GuidedForm({ schema, projectId, schemaSource, onResult, onBack }
             <button type="button" style={styles.primaryBtn} onClick={handleRetry}>Try again</button>
             <button type="button" style={styles.secondaryBtn} onClick={onBack}>Go home</button>
           </div>
+          {logs.length > 0 && (
+            <>
+              <button
+                type="button"
+                style={styles.logsToggle}
+                onClick={() => setShowErrorLogs((v) => !v)}
+              >
+                {showErrorLogs ? 'Hide' : 'Show'} logs ({logs.length})
+              </button>
+              {showErrorLogs && (
+                <div style={styles.logsPanel}>
+                  {logs.map((l, i) => (
+                    <div
+                      key={i}
+                      style={{
+                        ...styles.logLine,
+                        color: l.stream === 'stderr' ? 'var(--red)' : 'var(--text)',
+                      }}
+                    >
+                      {l.line}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
         </div>
       </div>
     );
@@ -488,7 +517,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 8, padding: '10px 12px',
     display: 'flex', flexDirection: 'column', gap: 2,
   },
-  logLine: { fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text)', transition: 'opacity 0.3s' },
+  logLine: { fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text)', lineHeight: 1.5, whiteSpace: 'pre-wrap' as const, wordBreak: 'break-all' as const },
   cancelBtn: {
     background: 'transparent', border: '1px solid var(--border)', borderRadius: 8,
     color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer', padding: '6px 14px',
@@ -497,7 +526,7 @@ const styles: Record<string, React.CSSProperties> = {
   // Error overlay
   errorOverlay: {
     display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16,
-    textAlign: 'center' as const,
+    textAlign: 'center' as const, width: '100%', maxWidth: 480,
   },
   errorIcon: { fontSize: 40 },
   errorTitle: { fontSize: 20, fontWeight: 700, color: 'var(--text)' },
@@ -508,6 +537,16 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1.6,
   },
   btnRow: { display: 'flex', gap: 10 },
+  logsToggle: {
+    background: 'transparent', border: 'none',
+    color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer',
+    textDecoration: 'underline', fontFamily: 'inherit',
+  },
+  logsPanel: {
+    width: '100%', background: 'var(--surface)', border: '1px solid var(--border)',
+    borderRadius: 8, padding: '10px 12px', maxHeight: 220, overflowY: 'auto' as const,
+    display: 'flex', flexDirection: 'column', gap: 2, textAlign: 'left' as const,
+  },
   primaryBtn: {
     padding: '10px 20px', borderRadius: 10, border: 'none',
     background: 'var(--accent)', color: 'var(--bg)',
