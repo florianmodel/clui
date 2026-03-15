@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import {
   IPCChannel,
   type DockerBuildRequest,
@@ -97,6 +97,8 @@ export interface ElectronAPI {
     showInFinder: (filePath: string) => Promise<void>;
     open: (filePath: string) => Promise<void>;
     getInfo: (req: FileGetInfoRequest) => Promise<FileGetInfoResponse>;
+    /** Electron 32+: resolve the host path for a dragged File object. */
+    getPathForFile: (file: File) => string;
   };
   dialog: {
     confirm: (req: AppConfirmRequest) => Promise<AppConfirmResponse>;
@@ -194,6 +196,7 @@ const api: ElectronAPI = {
       ipcRenderer.invoke(IPCChannel.FILE_OPEN, filePath),
     getInfo: (req: FileGetInfoRequest) =>
       ipcRenderer.invoke(IPCChannel.FILE_GET_INFO, req),
+    getPathForFile: (file: File) => webUtils.getPathForFile(file),
   },
 
   dialog: {

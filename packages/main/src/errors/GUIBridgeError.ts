@@ -125,7 +125,7 @@ function simplifyExecutionError(
     return { message: 'Cannot write to the output folder', suggestion: 'Check that the output directory is writable.' };
 
   // Shell / binary errors
-  if (stderr.includes('command not found') || stderr.includes(': not found'))
+  if (exitCode === 127 || stderr.includes('command not found') || stderr.includes(': not found'))
     return { message: 'Tool binary not found in the container', suggestion: 'Try reinstalling the project to rebuild the Docker image.' };
   if (exitCode === 137 || stderr.includes('Killed'))
     return { message: 'Process was killed — likely ran out of memory', suggestion: 'Try with a smaller file or split the task into parts.' };
