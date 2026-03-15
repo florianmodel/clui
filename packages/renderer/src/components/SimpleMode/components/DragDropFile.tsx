@@ -36,8 +36,10 @@ export function DragDropFile({ multiple, accept, value, onChange, label }: Props
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
     setDragging(false);
-    const paths = Array.from(e.dataTransfer.files).map((f) => (f as unknown as { path: string }).path);
-    handleFiles(paths);
+    const paths = Array.from(e.dataTransfer.files)
+      .map((f) => (f as unknown as { path: string }).path)
+      .filter((p): p is string => typeof p === 'string' && p.length > 0);
+    if (paths.length > 0) void handleFiles(paths);
   }
 
   async function handleClick() {

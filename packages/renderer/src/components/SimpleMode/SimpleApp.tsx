@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { ProjectMeta, UISchema, InstallProgressEvent, ExecLogEvent } from '@gui-bridge/shared';
+import type { ProjectMeta, UISchema, ExecLogEvent } from '@gui-bridge/shared';
 
 import { SetupScreen } from './screens/SetupScreen.js';
 import { WelcomeScreen } from './screens/WelcomeScreen.js';
 import { DiscoveryScreen } from './screens/DiscoveryScreen.js';
+import { InstallingScreen } from './screens/InstallingScreen.js';
 import { GuidedForm } from './screens/GuidedForm.js';
 import { ResultScreen } from './screens/ResultScreen.js';
 import { MiniSidebar } from './components/MiniSidebar.js';
-import { InstallingToast } from './components/InstallingToast.js';
 import { SimpleSettings } from './components/SimpleSettings.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -17,16 +17,10 @@ type SetupNeeds = 'docker' | 'apikey' | null;
 type Screen =
   | { type: 'welcome' }
   | { type: 'discovery'; intent: string }
+  | { type: 'installing'; owner: string; repo: string; projectName: string }
   | { type: 'guided'; projectId: string; schema: UISchema; schemaSource?: string }
   | { type: 'result'; projectId: string; schema: UISchema; schemaSource?: string; outputFiles: string[]; logs: ExecLogEvent[] }
   | { type: 'settings' };
-
-interface BackgroundInstall {
-  projectId: string;
-  projectName: string;
-  stage: InstallProgressEvent['stage'];
-  message: string;
-}
 
 interface Props {
   theme: 'dark' | 'light';
@@ -39,7 +33,6 @@ export function SimpleApp({ theme, onSwitchToClassic }: Props) {
   const [screen, setScreen] = useState<Screen>({ type: 'welcome' });
   const [setupNeeds, setSetupNeeds] = useState<SetupNeeds>(null);
   const [installedProjects, setInstalledProjects] = useState<ProjectMeta[]>([]);
-  const [backgroundInstalls, setBackgroundInstalls] = useState<BackgroundInstall[]>([]);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [showSettings, setShowSettings] = useState(false);
 
@@ -48,30 +41,8 @@ export function SimpleApp({ theme, onSwitchToClassic }: Props) {
     checkSetup();
     refreshProjects();
 
-    const cleanupInstall = window.electronAPI.on.installProgress((event) => {
-      setBackgroundInstalls((prev) =>
-        prev.map((bi) =>
-          bi.projectId === event.projectId
-            ? { ...bi, stage: event.stage, message: event.message }
-            : bi,
-        ),
-      );
-      if (event.stage === 'complete' || event.stage === 'error') {
-        refreshProjects();
-        // Auto-remove toast after 4s on complete
-        if (event.stage === 'complete') {
-          setTimeout(() => {
-            setBackgroundInstalls((prev) => prev.filter((bi) => bi.projectId !== event.projectId));
-          }, 4000);
-        }
-      }
-    });
-
     const cleanupDocker = window.electronAPI.on.dockerStatus((ev) => {
-      if (ev.running && setupNeeds === 'docker') {
-        // Docker just came online — recheck setup
-        checkSetup();
-      }
+      if (ev.running && setupNeeds === 'docker') checkSetup();
     });
 
     const onOnline = () => setIsOnline(true);
@@ -80,7 +51,6 @@ export function SimpleApp({ theme, onSwitchToClassic }: Props) {
     window.addEventListener('offline', onOffline);
 
     return () => {
-      cleanupInstall();
       cleanupDocker();
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
@@ -105,31 +75,7 @@ export function SimpleApp({ theme, onSwitchToClassic }: Props) {
     window.electronAPI.projects.list().then((res) => setInstalledProjects(res.projects));
   }
 
-  // ── Install flow ──────────────────────────────────────────────────────
-  const startInstall = useCallback((owner: string, repo: string, projectName: string) => {
-    const projectId = `${owner}--${repo}`;
-
-    // Add to background installs immediately
-    setBackgroundInstalls((prev) => {
-      if (prev.find((bi) => bi.projectId === projectId)) return prev;
-      return [...prev, { projectId, projectName, stage: 'cloning', message: 'Starting…' }];
-    });
-
-    // Fire install in background
-    window.electronAPI.projects.install({
-      owner,
-      repo,
-      searchResult: {
-        owner, repo,
-        fullName: `${owner}/${repo}`,
-        description: projectName,
-        stars: 0, language: '', topics: [],
-        lastUpdated: new Date().toISOString(),
-        htmlUrl: `https://github.com/${owner}/${repo}`,
-      },
-    }).then(() => refreshProjects());
-  }, []);
-
+  // ── Navigation ────────────────────────────────────────────────────────
   const openProject = useCallback(async (projectId: string) => {
     const res = await window.electronAPI.projects.get({ projectId });
     if (!res.ok || !res.schema) return;
@@ -137,8 +83,15 @@ export function SimpleApp({ theme, onSwitchToClassic }: Props) {
     setScreen({ type: 'guided', projectId, schema: res.schema, schemaSource });
   }, []);
 
-  const dismissInstall = useCallback((projectId: string) => {
-    setBackgroundInstalls((prev) => prev.filter((bi) => bi.projectId !== projectId));
+  const handleInstallComplete = useCallback(async (projectId: string) => {
+    refreshProjects();
+    const res = await window.electronAPI.projects.get({ projectId });
+    if (res.ok && res.schema) {
+      setScreen({ type: 'guided', projectId, schema: res.schema, schemaSource: res.meta?.schemaSource });
+    } else {
+      // Installed but no schema yet — go back to welcome
+      setScreen({ type: 'welcome' });
+    }
   }, []);
 
   // ── Render ────────────────────────────────────────────────────────────
@@ -165,7 +118,7 @@ export function SimpleApp({ theme, onSwitchToClassic }: Props) {
         {/* Mini sidebar */}
         <MiniSidebar
           projects={installedProjects}
-          backgroundInstalls={backgroundInstalls}
+          backgroundInstalls={[]}
           activeProjectId={screen.type === 'guided' || screen.type === 'result' ? screen.projectId : undefined}
           onSelectProject={openProject}
           onNewTool={() => setScreen({ type: 'welcome' })}
@@ -187,10 +140,19 @@ export function SimpleApp({ theme, onSwitchToClassic }: Props) {
               intent={screen.intent}
               installedProjects={installedProjects}
               onInstall={(owner, repo, name) => {
-                startInstall(owner, repo, name);
-                setScreen({ type: 'welcome' });
+                setScreen({ type: 'installing', owner, repo, projectName: name });
               }}
               onOpenProject={openProject}
+              onBack={() => setScreen({ type: 'welcome' })}
+            />
+          )}
+
+          {screen.type === 'installing' && (
+            <InstallingScreen
+              owner={screen.owner}
+              repo={screen.repo}
+              projectName={screen.projectName}
+              onComplete={handleInstallComplete}
               onBack={() => setScreen({ type: 'welcome' })}
             />
           )}
@@ -228,20 +190,6 @@ export function SimpleApp({ theme, onSwitchToClassic }: Props) {
           onSwitchToClassic={() => { setShowSettings(false); onSwitchToClassic(); }}
         />
       )}
-
-      {/* Background install toasts */}
-      <div style={styles.toastStack}>
-        {backgroundInstalls.map((bi) => (
-          <InstallingToast
-            key={bi.projectId}
-            projectName={bi.projectName}
-            stage={bi.stage}
-            message={bi.message}
-            onOpen={bi.stage === 'complete' ? () => openProject(bi.projectId) : undefined}
-            onDismiss={() => dismissInstall(bi.projectId)}
-          />
-        ))}
-      </div>
     </div>
   );
 }
@@ -258,9 +206,4 @@ const styles: Record<string, React.CSSProperties> = {
   },
   layout: { display: 'flex', flex: 1, overflow: 'hidden' },
   main: { flex: 1, overflowY: 'auto' as const, display: 'flex', flexDirection: 'column' },
-  toastStack: {
-    position: 'fixed' as const, bottom: 16, right: 16,
-    display: 'flex', flexDirection: 'column', gap: 8,
-    zIndex: 1000,
-  },
 };
