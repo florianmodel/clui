@@ -61,7 +61,30 @@ import {
   type InstallProgressEvent,
 } from '@gui-bridge/shared';
 
-// Type-safe API exposed to the renderer via contextBridge.
+// ── Drag-and-drop path resolution (Electron 32+) ──────────────────────────────
+// File.path was removed in Electron 32. webUtils.getPathForFile() is only
+// available in the isolated preload world. We intercept 'drop' in capture
+// phase here, resolve all paths, then expose them as plain strings so the
+// renderer can retrieve them synchronously in its own onDrop handler.
+
+let lastDroppedPaths: string[] = [];
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(globalThis as any).window?.addEventListener?.('drop', (e: any) => {
+  const files: unknown[] = Array.from(e?.dataTransfer?.files ?? []);
+  if (files.length === 0) return;
+  lastDroppedPaths = files.flatMap((f) => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = webUtils.getPathForFile(f as any);
+      return typeof p === 'string' && p.length > 0 ? [p] : [];
+    } catch {
+      return [];
+    }
+  });
+}, true /* capture phase — fires before React handlers */);
+
+// ── Type-safe API exposed to the renderer via contextBridge. ──────────────────
 // contextIsolation: true — renderer cannot access Node APIs directly.
 export interface ElectronAPI {
   app: {
@@ -97,8 +120,8 @@ export interface ElectronAPI {
     showInFinder: (filePath: string) => Promise<void>;
     open: (filePath: string) => Promise<void>;
     getInfo: (req: FileGetInfoRequest) => Promise<FileGetInfoResponse>;
-    /** Electron 32+: resolve the host path for a dragged File object. */
-    getPathForFile: (file: File) => string;
+    /** Electron 32+: returns paths resolved from the most recent drop event. */
+    getLastDroppedPaths: () => string[];
   };
   dialog: {
     confirm: (req: AppConfirmRequest) => Promise<AppConfirmResponse>;
@@ -196,7 +219,7 @@ const api: ElectronAPI = {
       ipcRenderer.invoke(IPCChannel.FILE_OPEN, filePath),
     getInfo: (req: FileGetInfoRequest) =>
       ipcRenderer.invoke(IPCChannel.FILE_GET_INFO, req),
-    getPathForFile: (file: File) => webUtils.getPathForFile(file),
+    getLastDroppedPaths: () => lastDroppedPaths,
   },
 
   dialog: {

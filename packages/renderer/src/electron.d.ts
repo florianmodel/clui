@@ -98,7 +98,7 @@ declare global {
         showInFinder: (filePath: string) => Promise<void>;
         open: (filePath: string) => Promise<void>;
         getInfo: (req: FileGetInfoRequest) => Promise<FileGetInfoResponse>;
-        getPathForFile: (file: File) => string;
+        getLastDroppedPaths: () => string[];
       };
       dialog: {
         confirm: (req: AppConfirmRequest) => Promise<AppConfirmResponse>;

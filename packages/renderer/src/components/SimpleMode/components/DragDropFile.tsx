@@ -36,10 +36,9 @@ export function DragDropFile({ multiple, accept, value, onChange, label }: Props
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
     setDragging(false);
-    // Electron 32+: File.path is removed; use webUtils.getPathForFile via preload.
-    const paths = Array.from(e.dataTransfer.files)
-      .map((f) => window.electronAPI.files.getPathForFile(f))
-      .filter((p): p is string => typeof p === 'string' && p.length > 0);
+    // Paths were resolved by the preload's capture-phase drop listener using
+    // webUtils.getPathForFile (Electron 32+ — File.path is gone).
+    const paths = window.electronAPI.files.getLastDroppedPaths();
     if (paths.length > 0) void handleFiles(paths);
   }
 
