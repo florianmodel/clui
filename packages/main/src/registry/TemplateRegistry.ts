@@ -20,7 +20,7 @@ export interface RegistryHit {
  * All failures are silent — the caller always falls through to normal LLM generation
  * if the registry is unreachable, returns an unknown project, or returns invalid JSON.
  *
- * See REGISTRY.md in the project root for how to add schemas to the registry.
+ * Registry maintenance happens in the separate clui-registry repository.
  */
 export class TemplateRegistry {
   /**
