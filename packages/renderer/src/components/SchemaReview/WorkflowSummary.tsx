@@ -1,4 +1,4 @@
-import type { Workflow } from '@gui-bridge/shared';
+import { describeExecution, type Workflow } from '@gui-bridge/shared';
 
 interface WorkflowSummaryProps {
   workflow: Workflow;
@@ -45,7 +45,7 @@ export function WorkflowSummary({ workflow, index }: WorkflowSummaryProps) {
 
       <div style={styles.command}>
         <span style={styles.commandLabel}>Command: </span>
-        <span style={styles.commandText}>{workflow.execute.command}</span>
+        <span style={styles.commandText}>{describeExecution(workflow)}</span>
       </div>
     </div>
   );

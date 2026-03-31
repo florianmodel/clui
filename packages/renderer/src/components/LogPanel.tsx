@@ -2,6 +2,33 @@ import { useEffect, useRef, useState } from 'react';
 import type { ExecLogEvent } from '@gui-bridge/shared';
 import { useToast } from './common/Toast.js';
 
+interface ErrorHint {
+  message: string;
+}
+
+function classifyError(logs: ExecLogEvent[]): ErrorHint | null {
+  const errorText = logs
+    .filter((l) => l.stream === 'stderr' || l.stream === 'system')
+    .map((l) => l.line)
+    .join('\n');
+
+  if (!errorText) return null;
+
+  if (/IsADirectoryError|is a directory/i.test(errorText)) {
+    return { message: 'Output path is a directory, not a file — the command template has a bug. Try Auto-fix.' };
+  }
+  if (/No such file or directory/i.test(errorText)) {
+    return { message: 'A file path could not be found. Check your input file or try Auto-fix.' };
+  }
+  if (/Permission denied/i.test(errorText)) {
+    return { message: 'Permission denied. The tool may not be able to write to the output location.' };
+  }
+  if (/MemoryError|Killed|Out of memory|Cannot allocate memory/i.test(errorText)) {
+    return { message: 'Process was killed — likely out of memory. Try a smaller input file.' };
+  }
+  return null;
+}
+
 interface Props {
   logs: ExecLogEvent[];
   onClear: () => void;
@@ -33,6 +60,7 @@ export function LogPanel({ logs, onClear }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
   const [progress, setProgress] = useState<number | null>(null);
+  const [errorHint, setErrorHint] = useState<ErrorHint | null>(null);
   const { showToast } = useToast();
   const durationRef = useRef<number | null>(null);
 
@@ -68,8 +96,20 @@ export function LogPanel({ logs, onClear }: Props) {
     if (logs.length === 0) {
       setProgress(null);
       durationRef.current = null;
+      setErrorHint(null);
     }
   }, [logs.length]);
+
+  // Compute error hint after run ends with non-zero exit code
+  useEffect(() => {
+    if (logs.length === 0) return;
+    const lastSys = [...logs].reverse().find((l) => l.stream === 'system');
+    if (lastSys && /exited with code [^0]/.test(lastSys.line)) {
+      setErrorHint(classifyError(logs));
+    } else {
+      setErrorHint(null);
+    }
+  }, [logs]);
 
   // Smart auto-scroll: only scroll if user is near the bottom
   useEffect(() => {
@@ -124,6 +164,13 @@ export function LogPanel({ logs, onClear }: Props) {
         <div style={styles.progressTrack}>
           <div style={{ ...styles.progressBar, width: `${progress}%` }} />
           <span style={styles.progressLabel}>{Math.round(progress)}%</span>
+        </div>
+      )}
+
+      {/* Error hint banner */}
+      {errorHint && (
+        <div style={styles.errorHint}>
+          {errorHint.message}
         </div>
       )}
 
@@ -198,4 +245,11 @@ const styles: Record<string, React.CSSProperties> = {
   },
   empty: { color: 'var(--text-muted)', fontStyle: 'italic', fontSize: 12 },
   prefix: { color: 'var(--text-muted)', userSelect: 'none' },
+  errorHint: {
+    padding: '6px 12px',
+    background: 'rgba(251,191,36,0.1)',
+    borderBottom: '1px solid rgba(251,191,36,0.3)',
+    fontSize: 11, color: '#f59e0b',
+    flexShrink: 0, lineHeight: 1.5,
+  },
 };

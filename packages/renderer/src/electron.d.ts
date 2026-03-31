@@ -56,12 +56,26 @@ import type {
   ProjectApplyUpdateResponse,
   FileGetInfoRequest,
   FileGetInfoResponse,
+  FileScanRequest,
+  FileScanResponse,
+  FileListRecentsResponse,
+  FileApplyChangesRequest,
+  FileApplyChangesResponse,
   AppConfirmRequest,
   AppConfirmResponse,
   AppNotifyRequest,
   DockerStatusEvent,
   InstallProgressEvent,
   NativeCapabilities,
+  ErrorLogGetResponse,
+  FolderScanRequest,
+  FolderScanResponse,
+  FolderListRecentsResponse,
+  FolderRunRequest,
+  FolderRunResponse,
+  FolderRunLogEvent,
+  FolderRunCompleteEvent,
+  FolderRunUrlEvent,
 } from '@gui-bridge/shared';
 
 declare global {
@@ -70,6 +84,11 @@ declare global {
       app: {
         getDesktopPath: () => Promise<string>;
         notify: (req: AppNotifyRequest) => Promise<void>;
+        openExternal: (url: string) => Promise<void>;
+      };
+      errorLog: {
+        get: () => Promise<ErrorLogGetResponse>;
+        clear: () => Promise<void>;
       };
       docker: {
         checkHealth: () => Promise<DockerHealthResponse>;
@@ -101,6 +120,9 @@ declare global {
         showInFinder: (filePath: string) => Promise<void>;
         open: (filePath: string) => Promise<void>;
         getInfo: (req: FileGetInfoRequest) => Promise<FileGetInfoResponse>;
+        scan: (req: FileScanRequest) => Promise<FileScanResponse>;
+        listRecents: () => Promise<FileListRecentsResponse>;
+        applyChanges: (req: FileApplyChangesRequest) => Promise<FileApplyChangesResponse>;
         getLastDroppedPaths: () => string[];
       };
       dialog: {
@@ -112,6 +134,12 @@ declare global {
       github: {
         search: (req: GithubSearchRequest) => Promise<GithubSearchResponse>;
         recommend: (req: GithubRecommendRequest) => Promise<GithubRecommendResponse>;
+      };
+      folder: {
+        scan: (req: FolderScanRequest) => Promise<FolderScanResponse>;
+        listRecents: () => Promise<FolderListRecentsResponse>;
+        run: (req: FolderRunRequest) => Promise<FolderRunResponse>;
+        cancel: () => Promise<void>;
       };
       native: {
         checkCapabilities: () => Promise<NativeCapabilities>;
@@ -134,6 +162,9 @@ declare global {
       on: {
         log: (callback: (event: ExecLogEvent) => void) => () => void;
         complete: (callback: (event: ExecCompleteEvent) => void) => () => void;
+        folderRunLog: (callback: (event: FolderRunLogEvent) => void) => () => void;
+        folderRunComplete: (callback: (event: FolderRunCompleteEvent) => void) => () => void;
+        folderRunUrl: (callback: (event: FolderRunUrlEvent) => void) => () => void;
         analysisProgress: (callback: (event: AnalysisProgressEvent) => void) => () => void;
         installProgress: (callback: (event: InstallProgressEvent) => void) => () => void;
         dockerStatus: (callback: (event: DockerStatusEvent) => void) => () => void;

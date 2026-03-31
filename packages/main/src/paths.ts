@@ -23,6 +23,10 @@ export function getConfigPath(): string {
   return path.join(getUserDataDir(), 'config.json');
 }
 
+export function getFinderRecentsPath(): string {
+  return path.join(getUserDataDir(), 'finder-recents.json');
+}
+
 /**
  * Path to Python analyzer scripts.
  * - Dev:      packages/main/src/analyzer/analyzer-scripts/ (source tree)

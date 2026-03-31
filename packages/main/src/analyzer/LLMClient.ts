@@ -1,10 +1,11 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { CapabilityDump, UISchema } from '@gui-bridge/shared';
-import { buildSchemaGenerationPrompt, buildRefinementPrompt } from './prompts/generate-schema.js';
+import type { CapabilityDump, ExecutionConfig, UISchema } from '@gui-bridge/shared';
+import { buildSchemaGenerationPrompt, buildRefinementPrompt, buildRepairPrompt } from './prompts/generate-schema.js';
 import { SchemaValidator } from './SchemaValidator.js';
+import { MODELS, TOKEN_LIMITS } from './models.js';
 
 export interface ILLMClient {
-  generateUISchema(dump: CapabilityDump, dockerImage: string): Promise<UISchema>;
+  generateUISchema(dump: CapabilityDump, dockerImage: string): Promise<{ schema: UISchema; warnings: string[] }>;
   refineUISchema(
     currentSchema: UISchema,
     dump: CapabilityDump,
@@ -17,26 +18,65 @@ export interface ILLMClient {
 export class LLMClient implements ILLMClient {
   private client: Anthropic;
   private validator = new SchemaValidator();
-  private static readonly MODEL = 'claude-haiku-4-5-20251001';
-  private static readonly MAX_TOKENS = 8192;
+  private static readonly MODEL = MODELS.anthropic;
+  private static readonly MAX_TOKENS = TOKEN_LIMITS.schemaGeneration;
 
   constructor(apiKey: string) {
     this.client = new Anthropic({ apiKey });
   }
 
-  async generateUISchema(dump: CapabilityDump, dockerImage: string): Promise<UISchema> {
+  async generateUISchema(dump: CapabilityDump, dockerImage: string): Promise<{ schema: UISchema; warnings: string[] }> {
+    const userPrompt = buildSchemaGenerationPrompt(dump, dockerImage);
+
+    // Turn 1: generate initial schema
     const response = await this.client.messages.create({
       model: LLMClient.MODEL,
       max_tokens: LLMClient.MAX_TOKENS,
-      messages: [{ role: 'user', content: buildSchemaGenerationPrompt(dump, dockerImage) }],
+      messages: [{ role: 'user', content: userPrompt }],
     });
 
-    const text = response.content
+    const turn1Text = response.content
       .filter((block): block is Anthropic.TextBlock => block.type === 'text')
       .map(block => block.text)
       .join('');
 
-    return this.validator.parse(text);
+    const { schema, warnings } = this.validator.parseWithWarnings(turn1Text);
+
+    // Turn 2: if validator found fixable issues, ask LLM to repair them
+    const repairableWarnings = warnings.filter(w =>
+      w.includes('placeholder mismatch') || w.includes('multi-file input'),
+    );
+
+    if (repairableWarnings.length > 0) {
+      try {
+        const repairPrompt = buildRepairPrompt(turn1Text, repairableWarnings);
+        const repairResponse = await this.client.messages.create({
+          model: LLMClient.MODEL,
+          max_tokens: TOKEN_LIMITS.schemaRepair,
+          messages: [
+            { role: 'user', content: userPrompt },
+            { role: 'assistant', content: turn1Text },
+            { role: 'user', content: repairPrompt },
+          ],
+        });
+
+        const turn2Text = repairResponse.content
+          .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+          .map(block => block.text)
+          .join('');
+
+        const { schema: repairedSchema, warnings: remainingWarnings } = this.validator.parseWithWarnings(turn2Text);
+        repairedSchema.dockerImage = dockerImage;
+        return { schema: repairedSchema, warnings: remainingWarnings };
+      } catch {
+        // If repair fails, return the original schema with warnings
+        schema.dockerImage = dockerImage;
+        return { schema, warnings };
+      }
+    }
+
+    schema.dockerImage = dockerImage;
+    return { schema, warnings };
   }
 
   async refineUISchema(
@@ -56,7 +96,10 @@ export class LLMClient implements ILLMClient {
       .map(block => block.text)
       .join('');
 
-    const refined = this.validator.parse(text);
+    const { schema: refined, warnings } = this.validator.parseWithWarnings(text);
+    if (warnings.length > 0) {
+      throw new Error(`Refined schema is invalid: ${warnings.join('; ')}`);
+    }
     // Ensure dockerImage is preserved
     refined.dockerImage = dockerImage;
     return refined;
@@ -66,10 +109,10 @@ export class LLMClient implements ILLMClient {
    * Send a raw prompt and return the response text as-is.
    * Used for autofix (returns simple JSON, not a UISchema).
    */
-  async rawComplete(prompt: string): Promise<string> {
+  async rawComplete(prompt: string, maxTokens?: number): Promise<string> {
     const response = await this.client.messages.create({
       model: LLMClient.MODEL,
-      max_tokens: 256,
+      max_tokens: maxTokens ?? TOKEN_LIMITS.commandFix,
       messages: [{ role: 'user', content: prompt }],
     });
 
@@ -98,7 +141,7 @@ export class LLMClient implements ILLMClient {
 
 /** Mock LLM client that returns a basic schema without calling the API. */
 export class MockLLMClient implements ILLMClient {
-  async generateUISchema(dump: CapabilityDump, dockerImage: string): Promise<UISchema> {
+  async generateUISchema(dump: CapabilityDump, dockerImage: string): Promise<{ schema: UISchema; warnings: string[] }> {
     // Simulate a short delay
     await new Promise(resolve => setTimeout(resolve, 800));
 
@@ -108,7 +151,7 @@ export class MockLLMClient implements ILLMClient {
     // Build a simple schema from the first few required args
     const steps = this.buildSteps(dump);
 
-    return {
+    const schema: UISchema = {
       projectId,
       projectName: toolName,
       description: dump.readme.description ?? `Run ${toolName} with a friendly interface.`,
@@ -123,7 +166,7 @@ export class MockLLMClient implements ILLMClient {
             'Fill in the fields below, then click Run. Output files will appear in the results panel.',
           steps,
           execute: {
-            command: this.buildCommand(dump, steps),
+            ...this.buildExecution(dump, steps),
             outputDir: '/output',
             outputPattern: undefined,
             successMessage: `${toolName} completed successfully.`,
@@ -131,16 +174,18 @@ export class MockLLMClient implements ILLMClient {
         },
       ],
     };
+    return { schema, warnings: [] };
   }
 
   async refineUISchema(
     currentSchema: UISchema,
     dump: CapabilityDump,
     dockerImage: string,
-    _feedback?: string,
+    _feedback?: string, // intentionally ignored in mock mode — always regenerates from scratch
   ): Promise<UISchema> {
     // Mock: just regenerate
-    return this.generateUISchema(dump, dockerImage);
+    const { schema } = await this.generateUISchema(dump, dockerImage);
+    return schema;
   }
 
   private getToolName(dump: CapabilityDump): string {
@@ -196,21 +241,26 @@ export class MockLLMClient implements ILLMClient {
     });
   }
 
-  private buildCommand(dump: CapabilityDump, steps: ReturnType<MockLLMClient['buildSteps']>): string {
+  private buildExecution(
+    dump: CapabilityDump,
+    steps: ReturnType<MockLLMClient['buildSteps']>,
+  ): Pick<ExecutionConfig, 'executable' | 'args'> {
     const toolCmd = dump.stack.entrypoint?.includes(':')
       ? dump.stack.entrypoint.split(':')[0]
       : (dump.stack.entrypoint ?? dump.dockerImage.split('/').pop()?.split(':')[0] ?? 'run');
 
-    const parts = [toolCmd];
+    const args: string[] = [];
     for (const step of steps) {
       if (step.type === 'file_input') {
-        parts.push(`/input/{${step.id}}`);
+        args.push(`/input/${step.id}/{${step.id}}`);
+      } else if (step.type === 'directory_input') {
+        args.push(`/input/${step.id}`);
       } else if (step.type === 'toggle') {
-        parts.push(`--${step.id.replace(/_/g, '-')}`);
+        args.push(`{${step.id}}`);
       } else {
-        parts.push(`--${step.id.replace(/_/g, '-')} {${step.id}}`);
+        args.push(`--${step.id.replace(/_/g, '-')}`, `{${step.id}}`);
       }
     }
-    return parts.join(' ');
+    return { executable: toolCmd, args };
   }
 }

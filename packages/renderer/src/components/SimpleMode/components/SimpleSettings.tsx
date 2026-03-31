@@ -2,14 +2,16 @@ import { useState, useEffect } from 'react';
 import type { AppConfig } from '@gui-bridge/shared';
 
 interface Props {
+  theme: 'dark' | 'light';
   onClose: () => void;
+  onToggleTheme: () => void;
   onSwitchToClassic: () => void;
 }
 
 type Provider = 'anthropic' | 'openai';
 type KeyState = 'idle' | 'validating' | 'valid' | 'invalid';
 
-export function SimpleSettings({ onClose, onSwitchToClassic }: Props) {
+export function SimpleSettings({ theme, onClose, onToggleTheme, onSwitchToClassic }: Props) {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [provider, setProvider] = useState<Provider>('anthropic');
   const [apiKey, setApiKey] = useState('');
@@ -207,6 +209,30 @@ export function SimpleSettings({ onClose, onSwitchToClassic }: Props) {
             </div>
           </section>
 
+          {/* Appearance */}
+          <section style={styles.section}>
+            <div style={styles.sectionTitle}>Appearance</div>
+            <div style={styles.themeRow}>
+              <span style={styles.themeLabel}>Color scheme</span>
+              <div style={styles.themeToggle}>
+                <button
+                  type="button"
+                  style={{ ...styles.themeBtn, ...(theme === 'dark' ? styles.themeBtnActive : {}) }}
+                  onClick={() => theme !== 'dark' && onToggleTheme()}
+                >
+                  Dark
+                </button>
+                <button
+                  type="button"
+                  style={{ ...styles.themeBtn, ...(theme === 'light' ? styles.themeBtnActive : {}) }}
+                  onClick={() => theme !== 'light' && onToggleTheme()}
+                >
+                  Light
+                </button>
+              </div>
+            </div>
+          </section>
+
           {/* Mode */}
           <section style={styles.section}>
             <div style={styles.sectionTitle}>Interface</div>
@@ -329,5 +355,21 @@ const styles: Record<string, React.CSSProperties> = {
   },
   classicNote: {
     fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5,
+  },
+  themeRow: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+  },
+  themeLabel: { fontSize: 13, color: 'var(--text)' },
+  themeToggle: {
+    display: 'flex', borderRadius: 8,
+    border: '1px solid var(--border)', overflow: 'hidden',
+  },
+  themeBtn: {
+    border: 'none', background: 'transparent',
+    color: 'var(--text-muted)', fontSize: 12,
+    padding: '5px 14px', cursor: 'pointer', fontFamily: 'inherit',
+  },
+  themeBtnActive: {
+    background: 'var(--surface-2)', color: 'var(--text)', fontWeight: 600,
   },
 };

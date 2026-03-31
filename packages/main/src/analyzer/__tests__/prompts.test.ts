@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildFixCommandPrompt } from '../prompts/fix-command.js';
 import { buildRefinementPrompt } from '../prompts/generate-schema.js';
-import type { Workflow, UISchema, CapabilityDump } from '@gui-bridge/shared';
+import { describeExecution, type Workflow, type UISchema, type CapabilityDump } from '@gui-bridge/shared';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -15,7 +15,8 @@ const workflow: Workflow = {
     { id: 'quality', label: 'Quality', type: 'number', required: false },
   ],
   execute: {
-    command: 'ffmpeg -i /input/{input_file} -q {quality} /output/out.{output_format}',
+    executable: 'ffmpeg',
+    args: ['-i', '/input/input_file/{input_file}', '-q', '{quality}', '/output/out.{output_format}'],
     outputDir: '/output',
   },
 };
@@ -50,9 +51,9 @@ describe('buildFixCommandPrompt', () => {
     expect(prompt).toContain('Convert Video');
   });
 
-  it('includes the original command template', () => {
+  it('includes the original execution config', () => {
     const prompt = buildFixCommandPrompt(workflow, 'ffmpeg -i /input/file.mp4 /output/out.mp4', 'some error');
-    expect(prompt).toContain(workflow.execute.command);
+    expect(prompt).toContain(describeExecution(workflow));
   });
 
   it('includes all step IDs as available placeholders', () => {
@@ -74,24 +75,24 @@ describe('buildFixCommandPrompt', () => {
     expect(prompt).toContain(error);
   });
 
-  it('trims error output to the last 1500 characters', () => {
-    const longError = 'x'.repeat(2000);
+  it('trims error output to the last 3000 characters', () => {
+    const longError = 'x'.repeat(4000);
     const prompt = buildFixCommandPrompt(workflow, 'cmd', longError);
-    // Should contain the tail (last 1500 chars), not the full 2000
-    expect(prompt).toContain('x'.repeat(1500));
-    // Should not contain more than 1500 consecutive x's
-    expect(prompt).not.toContain('x'.repeat(1501));
+    // Should contain the tail (last 3000 chars), not the full 4000
+    expect(prompt).toContain('x'.repeat(3000));
+    // Should not contain more than 3000 consecutive x's
+    expect(prompt).not.toContain('x'.repeat(3001));
   });
 
-  it('requests JSON output with template and explanation fields', () => {
+  it('requests JSON output with execute and explanation fields', () => {
     const prompt = buildFixCommandPrompt(workflow, 'cmd', 'error');
-    expect(prompt).toContain('"template"');
+    expect(prompt).toContain('"execute"');
     expect(prompt).toContain('"explanation"');
   });
 
-  it('instructs to keep /input/ and /output/ path conventions', () => {
+  it('instructs to keep per-step /input/ mounts and /output/ paths', () => {
     const prompt = buildFixCommandPrompt(workflow, 'cmd', 'error');
-    expect(prompt).toContain('/input/');
+    expect(prompt).toContain('/input/input_file/');
     expect(prompt).toContain('/output/');
   });
 });

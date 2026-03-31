@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn } from 'child_process';
+import type { InputBinding, ResolvedExecution } from '@gui-bridge/shared';
 import type { ExecutionResult, LogCallback } from '../docker/DockerManager.js';
 import type { IExecutor, ExecuteOptions, CaptureResult } from './IExecutor.js';
 
@@ -19,42 +20,46 @@ export class NativeExecutor implements IExecutor {
   private activeProcess: ReturnType<typeof spawn> | null = null;
 
   async run(
-    command: string,
+    execution: ResolvedExecution,
     opts: ExecuteOptions,
     onLog: LogCallback,
   ): Promise<ExecutionResult> {
-    const { inputFiles = [], outputDir, env, timeoutMs = 5 * 60 * 1000 } = opts;
+    const { inputBindings = [], outputDir, env, timeoutMs = 5 * 60 * 1000 } = opts;
 
-    // Create temp dirs for input/output (mirrors Docker volume pattern)
-    const tempInputDir = inputFiles.length > 0 ? fs.mkdtempSync(path.join(os.tmpdir(), 'clui-input-')) : null;
+    const fileBindings = inputBindings.filter((binding) => binding.type === 'file_input');
+    const tempInputDir = fileBindings.length > 0 ? fs.mkdtempSync(path.join(os.tmpdir(), 'clui-input-')) : null;
     const tempOutputDir = outputDir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'clui-output-'));
     const ownedOutput = !outputDir;
 
     try {
-      // Copy input files into temp input dir
+      // Copy file_input steps into a temp /input tree with per-step subdirectories.
       if (tempInputDir) {
-        for (const src of inputFiles) {
-          fs.copyFileSync(src, path.join(tempInputDir, path.basename(src)));
+        for (const binding of fileBindings) {
+          const stepDir = path.join(tempInputDir, binding.stepId);
+          fs.mkdirSync(stepDir, { recursive: true });
+          for (const src of binding.sourcePaths) {
+            fs.copyFileSync(src, path.join(stepDir, path.basename(src)));
+          }
         }
       }
 
-      // Rewrite /input/ and /output/ tokens to real host paths
-      let rewritten = command;
-      if (tempInputDir) {
-        rewritten = rewritten.replace(/\/input\//g, tempInputDir + '/');
-      }
-      rewritten = rewritten.replace(/\/output\//g, tempOutputDir + '/');
+      const rewritten = this.rewriteExecution(execution, inputBindings, tempInputDir, tempOutputDir);
+      const preview = rewritten.mode === 'shell'
+        ? `sh -lc ${rewritten.shellScript ?? ''}`
+        : [rewritten.executable ?? '', ...(rewritten.args ?? [])].filter(Boolean).join(' ');
 
-      onLog('system', `[Native] ${rewritten}`);
+      onLog('system', `[Native] ${preview}`);
 
-      // Run via sh -c (same as Docker useShell: true)
-      const result = await this.spawnCommand(rewritten, { env, timeoutMs }, onLog);
+      const result = await this.spawnExecution(rewritten, { env, timeoutMs }, onLog);
 
-      // Collect output files
       const outputFiles: string[] = [];
       if (fs.existsSync(tempOutputDir)) {
-        for (const entry of fs.readdirSync(tempOutputDir)) {
-          outputFiles.push(path.join(tempOutputDir, entry));
+        try {
+          for (const entry of fs.readdirSync(tempOutputDir)) {
+            outputFiles.push(path.join(tempOutputDir, entry));
+          }
+        } catch {
+          // Permissions issue or race with cleanup — return empty list rather than crash
         }
       }
 
@@ -93,6 +98,108 @@ export class NativeExecutor implements IExecutor {
       const proc = spawn('sh', ['-c', cmd], {
         env: { ...process.env, ...(opts.env ?? {}) },
       });
+      this.activeProcess = proc;
+
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+
+      proc.stdout.on('data', (chunk: Buffer) => {
+        stdoutChunks.push(chunk);
+        for (const line of chunk.toString().split('\n')) {
+          if (line.trim()) onLog('stdout', line);
+        }
+      });
+
+      proc.stderr.on('data', (chunk: Buffer) => {
+        stderrChunks.push(chunk);
+        for (const line of chunk.toString().split('\n')) {
+          if (line.trim()) onLog('stderr', line);
+        }
+      });
+
+      const timer = setTimeout(() => {
+        proc.kill('SIGTERM');
+        onLog('system', `[Native] Timed out after ${opts.timeoutMs}ms`);
+      }, opts.timeoutMs);
+
+      proc.on('close', (code) => {
+        clearTimeout(timer);
+        this.activeProcess = null;
+        resolve({
+          exitCode: code ?? -1,
+          stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+          stderr: Buffer.concat(stderrChunks).toString('utf8'),
+        });
+      });
+
+      proc.on('error', (err) => {
+        clearTimeout(timer);
+        this.activeProcess = null;
+        onLog('system', `[Native] Process error: ${err.message}`);
+        resolve({ exitCode: -1, stdout: '', stderr: err.message });
+      });
+    });
+  }
+
+  private rewriteExecution(
+    execution: ResolvedExecution,
+    inputBindings: InputBinding[],
+    tempInputDir: string | null,
+    outputDir: string,
+  ): ResolvedExecution {
+    const replacements = inputBindings
+      .map((binding) => {
+        const hostDir = binding.type === 'directory_input'
+          ? binding.sourcePaths[0]
+          : `${tempInputDir ?? ''}/${binding.stepId}`;
+        const hostValue = binding.multiple || binding.type === 'directory_input'
+          ? hostDir
+          : `${hostDir}/${path.basename(binding.sourcePaths[0])}`;
+        return [
+          [binding.containerValue, hostValue] as const,
+          [binding.containerDir, hostDir] as const,
+        ];
+      })
+      .flat()
+      .sort((a, b) => b[0].length - a[0].length);
+
+    const rewriteValue = (value: string): string => {
+      let rewritten = value;
+      for (const [needle, replacement] of replacements) {
+        rewritten = rewritten.replaceAll(needle, replacement);
+      }
+      rewritten = rewritten.replace(/\/output\b/g, outputDir);
+      return rewritten;
+    };
+
+    if (execution.mode === 'shell') {
+      return {
+        ...execution,
+        shellScript: execution.shellScript ? rewriteValue(execution.shellScript) : execution.shellScript,
+      };
+    }
+
+    return {
+      ...execution,
+      executable: execution.executable ? rewriteValue(execution.executable) : execution.executable,
+      args: (execution.args ?? []).map(rewriteValue),
+    };
+  }
+
+  private spawnExecution(
+    execution: ResolvedExecution,
+    opts: { env?: Record<string, string>; timeoutMs: number },
+    onLog: LogCallback,
+  ): Promise<CaptureResult> {
+    return new Promise((resolve) => {
+      const proc = execution.mode === 'shell'
+        ? spawn('sh', ['-lc', execution.shellScript ?? ''], {
+            env: { ...process.env, ...(opts.env ?? {}) },
+          })
+        : spawn(execution.executable ?? '', execution.args ?? [], {
+            env: { ...process.env, ...(opts.env ?? {}) },
+          });
+
       this.activeProcess = proc;
 
       const stdoutChunks: Buffer[] = [];

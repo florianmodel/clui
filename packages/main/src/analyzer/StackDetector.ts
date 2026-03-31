@@ -48,6 +48,7 @@ export class StackDetector {
       hasPyproject,
       hasSetupPy,
     );
+    const analyzerCommand = StackDetector.detectAnalyzerCommand(repoDir, language, entrypoint);
 
     return {
       language,
@@ -55,6 +56,7 @@ export class StackDetector {
       entrypoint,
       entrypointConfidence: confidence,
       keyFiles,
+      analyzerCommand,
     };
   }
 
@@ -151,6 +153,80 @@ export class StackDetector {
     }
 
     return { entrypoint: undefined, confidence: 0 };
+  }
+
+  private static detectAnalyzerCommand(
+    repoDir: string,
+    language: StackInfo['language'],
+    entrypoint?: string,
+  ): string[] | undefined {
+    if (language === 'python' && entrypoint) {
+      if (entrypoint.includes(':')) {
+        return ['python', '-m', entrypoint.split(':')[0]];
+      }
+      return ['python', `./${entrypoint}`];
+    }
+
+    if (language === 'node') {
+      const binPath = StackDetector.detectNodeBinPath(repoDir);
+      if (binPath) return ['node', `./${binPath}`];
+      return undefined;
+    }
+
+    if (language === 'rust') {
+      const binary = StackDetector.detectCargoBinaryName(repoDir);
+      return binary ? [`/usr/local/bin/${binary}`] : undefined;
+    }
+
+    if (language === 'go') {
+      return ['/usr/local/bin/app'];
+    }
+
+    return undefined;
+  }
+
+  private static detectNodeBinPath(repoDir: string): string | undefined {
+    const packageJsonPath = path.join(repoDir, 'package.json');
+    if (!fs.existsSync(packageJsonPath)) return undefined;
+
+    try {
+      const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as {
+        bin?: string | Record<string, string>;
+      };
+
+      if (typeof pkg.bin === 'string' && pkg.bin.trim()) {
+        return pkg.bin.trim();
+      }
+
+      if (pkg.bin && typeof pkg.bin === 'object') {
+        const first = Object.values(pkg.bin).find(
+          (value): value is string => typeof value === 'string' && value.trim().length > 0,
+        );
+        if (first) return first.trim();
+      }
+    } catch {
+      // ignore malformed package.json
+    }
+
+    return undefined;
+  }
+
+  private static detectCargoBinaryName(repoDir: string): string | undefined {
+    const cargoPath = path.join(repoDir, 'Cargo.toml');
+    if (!fs.existsSync(cargoPath)) return undefined;
+
+    try {
+      const content = fs.readFileSync(cargoPath, 'utf8');
+      const explicitBin = content.match(/\[\[bin\]\][\s\S]*?name\s*=\s*"([^"]+)"/);
+      if (explicitBin) return explicitBin[1].trim();
+
+      const packageMatch = content.match(/\[package\][\s\S]*?name\s*=\s*"([^"]+)"/);
+      if (packageMatch) return packageMatch[1].trim();
+    } catch {
+      // ignore unreadable Cargo.toml
+    }
+
+    return undefined;
   }
 
   /**

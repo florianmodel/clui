@@ -51,7 +51,7 @@ export class NativeInstallManager {
     const [docker, brew, pip, npm, cargo] = await Promise.all([
       this.which('docker'),
       this.which('brew'),
-      this.which('pip3').catch(() => this.which('pip')),
+      this.whichAny(['pip3', 'pip']),
       this.which('npm'),
       this.which('cargo'),
     ]);
@@ -99,7 +99,7 @@ export class NativeInstallManager {
       };
     }
 
-    const cmd = this.buildInstallCommand(pm, entry.install);
+    const cmd = await this.buildInstallCommand(pm, entry.install);
     onLog('system', `Installing via ${pm}: ${cmd.join(' ')}`);
     onProgress?.(5);
 
@@ -140,14 +140,14 @@ export class NativeInstallManager {
     return check.installed ? (check.version ?? 'installed') : null;
   }
 
-  private buildInstallCommand(pm: PackageManager, install: NativeInstall): string[] {
+  private async buildInstallCommand(pm: PackageManager, install: NativeInstall): Promise<string[]> {
     switch (pm) {
       case 'brew':
         return ['brew', 'install', install.brew!];
       case 'apt':
         return ['sudo', 'apt-get', 'install', '-y', install.apt!];
       case 'pip':
-        return ['pip3', 'install', '--user', install.pip!];
+        return [await this.detectPipBinary(), 'install', '--user', install.pip!];
       case 'npm':
         return ['npm', 'install', '-g', install.npm!];
       case 'cargo':
@@ -162,5 +162,23 @@ export class NativeInstallManager {
     } catch {
       return null;
     }
+  }
+
+  private async whichAny(binaries: string[]): Promise<string | null> {
+    for (const binary of binaries) {
+      const resolved = await this.which(binary);
+      if (resolved) return resolved;
+    }
+    return null;
+  }
+
+  private async detectPipBinary(): Promise<string> {
+    const pip3 = await this.which('pip3');
+    if (pip3) return 'pip3';
+
+    const pip = await this.which('pip');
+    if (pip) return 'pip';
+
+    throw new Error('pip is not installed');
   }
 }

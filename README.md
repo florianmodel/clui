@@ -21,6 +21,7 @@ Every tool runs in an isolated Docker container. No setup, no dependency conflic
 ## Features
 
 - **AI-generated UI** — Claude reads the tool's `--help` output and README to generate form-based workflows with the right input types (file pickers, dropdowns, sliders, toggles)
+- **Finder mode** — choose a folder or a single file and CLUI explains what it sees, offers safe actions, and suggests matching tools in plain language
 - **New Use Case** — describe a new task in plain language and AI adds a new workflow tab on the fly
 - **Improve UI** — give feedback and Claude regenerates the interface to match your needs
 - **AI repo recommendation** — describe what you want to do ("merge PDFs", "compress videos") and get curated GitHub suggestions
@@ -63,6 +64,14 @@ On first launch, open **Settings** and enter your Anthropic API key.
 2. Search for any CLI project (e.g. "ffmpeg", "imagemagick", "yt-dlp")
 3. Click **Install** — the app clones the repo and builds a Docker image
 4. Once installed, click **Generate UI** — AI inspects the CLI and creates a workflow interface
+
+### Inspect a file or folder
+
+1. Click **Finder** in the sidebar
+2. Choose either **Choose folder…** or **Choose file…**
+3. Let CLUI explain what it found in plain language
+4. For folders, use the main suggested action or open a matching tool
+5. For files, edit safe Finder-style details like tags, locked state, and file extension visibility, then open a matching tool if needed
 
 ---
 
@@ -123,7 +132,7 @@ npm run build -w packages/main   # Rebuild main
 # Then restart Electron
 
 # Tests
-npm test --workspace=packages/main   # 82 unit tests (vitest)
+npm test --workspace=packages/main   # 105 unit tests (vitest)
 ```
 
 ---

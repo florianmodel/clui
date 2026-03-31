@@ -7,6 +7,7 @@ export interface StackInfo {
   entrypoint?: string;
   entrypointConfidence: number;  // 0-1
   keyFiles: string[];
+  analyzerCommand?: string[];
 }
 
 export interface ReadmeInfo {

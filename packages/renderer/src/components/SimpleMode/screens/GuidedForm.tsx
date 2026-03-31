@@ -1,23 +1,45 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { UISchema, Step, ExecLogEvent, ExecCompleteEvent } from '@gui-bridge/shared';
+import { buildCommand } from '@gui-bridge/shared';
 import { DragDropFile } from '../components/DragDropFile.js';
 
 interface Props {
   schema: UISchema;
   projectId: string;
   schemaSource?: string;
+  initialValues?: Record<string, unknown>;
+  contextHint?: {
+    title: string;
+    description: string;
+  };
   onResult: (outputFiles: string[], logs: ExecLogEvent[]) => void;
   onBack: () => void;
 }
 
 type RunState = 'idle' | 'running' | 'error';
+type FixedExecute = Pick<UISchema['workflows'][number]['execute'], 'executable' | 'args' | 'shellScript'>;
 
-export function GuidedForm({ schema, projectId, schemaSource, onResult, onBack }: Props) {
+function initValues(workflow: UISchema['workflows'][number], initialValues?: Record<string, unknown>): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+  for (const step of workflow.steps ?? []) {
+    if (step.default !== undefined) {
+      values[step.id] = step.default;
+    }
+  }
+  return {
+    ...values,
+    ...(initialValues ?? {}),
+  };
+}
+
+export function GuidedForm({ schema, projectId, schemaSource, initialValues, contextHint, onResult, onBack }: Props) {
   const workflow = schema.workflows[0]; // Simple mode always uses the first workflow
-  const visibleSteps = workflow.steps.filter((s) => !s.advanced);
+  // Show all non-advanced steps, plus any required steps even if marked advanced
+  // (required advanced steps would otherwise be silently skipped, leaving placeholders empty)
+  const visibleSteps = (workflow.steps ?? []).filter((s) => !s.advanced || s.required);
 
   const [stepIndex, setStepIndex] = useState(0);
-  const [values, setValues] = useState<Record<string, unknown>>({});
+  const [values, setValues] = useState<Record<string, unknown>>(() => initValues(workflow, initialValues));
   const [direction, setDirection] = useState<'forward' | 'back'>('forward');
   const [animating, setAnimating] = useState(false);
   const [runState, setRunState] = useState<RunState>('idle');
@@ -25,12 +47,24 @@ export function GuidedForm({ schema, projectId, schemaSource, onResult, onBack }
   const [logs, setLogs] = useState<ExecLogEvent[]>([]);
   const [showErrorLogs, setShowErrorLogs] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [fixStatus, setFixStatus] = useState<'idle' | 'thinking' | 'done'>('idle');
+  const [fixMsg, setFixMsg] = useState('');
+  const [currentWorkflow, setCurrentWorkflow] = useState(workflow);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const errorOutputRef = useRef('');
+  const isRunningRef = useRef(false);
+  const activeRunIdRef = useRef<string | null>(null);
 
   const currentStep = visibleSteps[stepIndex];
   const isLast = stepIndex === visibleSteps.length - 1;
   const totalSteps = visibleSteps.length;
+
+  useEffect(() => {
+    setValues(initValues(workflow, initialValues));
+    setCurrentWorkflow(workflow);
+    setStepIndex(0);
+  }, [workflow, initialValues]);
 
   // Focus text inputs on step change
   useEffect(() => {
@@ -74,26 +108,67 @@ export function GuidedForm({ schema, projectId, schemaSource, onResult, onBack }
     return val !== undefined && val !== '' && val !== null;
   }
 
-  async function handleRun() {
+  function buildUpdatedWorkflow(
+    workflowToUpdate: typeof currentWorkflow,
+    execute: FixedExecute,
+  ): typeof currentWorkflow {
+    if (execute.shellScript?.trim()) {
+      return {
+        ...workflowToUpdate,
+        execute: {
+          ...workflowToUpdate.execute,
+          shellScript: execute.shellScript.trim(),
+          executable: undefined,
+          args: undefined,
+          command: undefined,
+        },
+      };
+    }
+
+    return {
+      ...workflowToUpdate,
+      execute: {
+        ...workflowToUpdate.execute,
+        executable: execute.executable?.trim(),
+        args: execute.args ?? [],
+        shellScript: undefined,
+        command: undefined,
+      },
+    };
+  }
+
+  async function handleRun(wf = currentWorkflow) {
+    if (isRunningRef.current) return; // prevent double-invocation
+    isRunningRef.current = true;
     setRunState('running');
     setRunError('');
     setLogs([]);
     setElapsed(0);
+    // Don't reset errorOutputRef — accumulate across retries for better autofix context
 
     const startTime = Date.now();
     timerRef.current = setInterval(() => setElapsed(Math.floor((Date.now() - startTime) / 1000)), 500);
 
     const logsCollected: ExecLogEvent[] = [];
 
+    let runId: string | null = null;
+
     const cleanupLog = window.electronAPI.on.log((event) => {
+      if (!runId || event.runId !== runId) return;
       logsCollected.push(event);
       setLogs((prev) => [...prev, event]);
+      if (event.stream === 'stderr' || event.stream === 'system') {
+        errorOutputRef.current += event.line + '\n';
+      }
     });
 
     const cleanupComplete = window.electronAPI.on.complete((event: ExecCompleteEvent) => {
+      if (!runId || event.runId !== runId) return;
       if (timerRef.current) clearInterval(timerRef.current);
       cleanupLog();
       cleanupComplete();
+      isRunningRef.current = false;
+      activeRunIdRef.current = null;
 
       if (event.exitCode === 0) {
         onResult(event.outputFiles, logsCollected);
@@ -106,7 +181,7 @@ export function GuidedForm({ schema, projectId, schemaSource, onResult, onBack }
     try {
       const desktopPath = await window.electronAPI.app.getDesktopPath();
       const res = await window.electronAPI.exec.schemaRun({
-        workflow,
+        workflow: wf,
         dockerImage: schema.dockerImage,
         dockerfilePath: schema.dockerfilePath,
         inputs: values,
@@ -114,20 +189,53 @@ export function GuidedForm({ schema, projectId, schemaSource, onResult, onBack }
         projectId,
       });
 
-      if (!res.ok) {
+      if (!res.ok || !res.runId) {
         if (timerRef.current) clearInterval(timerRef.current);
         cleanupLog();
         cleanupComplete();
+        isRunningRef.current = false;
+        activeRunIdRef.current = null;
         setRunState('error');
         setRunError(res.error ?? 'Failed to start');
+        return;
       }
+      runId = res.runId;
+      activeRunIdRef.current = res.runId;
+      // Success: wait for complete event (which will clear isRunningRef)
     } catch (err) {
       if (timerRef.current) clearInterval(timerRef.current);
       cleanupLog();
       cleanupComplete();
+      isRunningRef.current = false;
+      activeRunIdRef.current = null;
       setRunState('error');
       setRunError(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  async function handleAutofix() {
+    setFixStatus('thinking');
+    setFixMsg('');
+
+    const res = await window.electronAPI.exec.autofix({
+      workflow: currentWorkflow,
+      failedCommand: buildCommand(currentWorkflow, values),
+      errorOutput: errorOutputRef.current,
+      inputValues: values,
+    });
+
+    if (!res.ok || !res.execute) {
+      setFixStatus('done');
+      setFixMsg(`Auto-fix failed: ${res.error ?? 'No suggestion returned.'}`);
+      return;
+    }
+
+    // Apply the fix silently and re-run
+    const updatedWorkflow = buildUpdatedWorkflow(currentWorkflow, res.execute);
+    setCurrentWorkflow(updatedWorkflow);
+    setFixStatus('done');
+    setFixMsg('AI suggested a fix — retrying…');
+    await handleRun(updatedWorkflow);
   }
 
   const handleRetry = useCallback(() => {
@@ -135,6 +243,9 @@ export function GuidedForm({ schema, projectId, schemaSource, onResult, onBack }
     setRunError('');
     setShowErrorLogs(false);
     setLogs([]);
+    setFixStatus('idle');
+    setFixMsg('');
+    errorOutputRef.current = '';
   }, []);
 
   // Running overlay
@@ -176,6 +287,17 @@ export function GuidedForm({ schema, projectId, schemaSource, onResult, onBack }
             <button type="button" style={styles.primaryBtn} onClick={handleRetry}>Try again</button>
             <button type="button" style={styles.secondaryBtn} onClick={onBack}>Go home</button>
           </div>
+          {fixStatus === 'idle' && (
+            <button type="button" style={styles.autofixBtn} onClick={handleAutofix}>
+              🔧 Auto-fix with AI
+            </button>
+          )}
+          {fixStatus === 'thinking' && (
+            <div style={styles.fixMsg}>Analyzing error and generating fix…</div>
+          )}
+          {fixStatus === 'done' && fixMsg && (
+            <div style={styles.fixMsg}>{fixMsg}</div>
+          )}
           {logs.length > 0 && (
             <>
               <button
@@ -252,6 +374,13 @@ export function GuidedForm({ schema, projectId, schemaSource, onResult, onBack }
           ))}
         </div>
 
+        {contextHint && (
+          <div style={styles.contextCard}>
+            <div style={styles.contextTitle}>{contextHint.title}</div>
+            <div style={styles.contextDesc}>{contextHint.description}</div>
+          </div>
+        )}
+
         {/* Step card */}
         <div style={{ ...styles.stepCard, ...slideStyle }}>
           <div style={styles.stepMeta}>
@@ -313,6 +442,19 @@ function StepInput({ step, value, onChange, onEnter, inputRef }: StepInputProps)
         accept={step.accept}
         value={paths}
         onChange={(newPaths) => onChange(step.multiple ? newPaths : newPaths[0])}
+        label={step.label}
+        description={step.description}
+      />
+    );
+  }
+
+  if (step.type === 'directory_input') {
+    const paths = Array.isArray(value) ? value as string[] : value ? [value as string] : [];
+    return (
+      <DragDropFile
+        directory
+        value={paths}
+        onChange={(newPaths) => onChange(newPaths[0])}
         label={step.label}
         description={step.description}
       />
@@ -439,6 +581,27 @@ const styles: Record<string, React.CSSProperties> = {
   },
   progressDots: { display: 'flex', gap: 5, alignItems: 'center', justifyContent: 'center' },
   dot: { height: 6, borderRadius: 3, background: 'var(--border)', transition: 'all 0.3s ease' },
+  contextCard: {
+    padding: '14px 16px',
+    borderRadius: 14,
+    border: '1px solid var(--border)',
+    background: 'var(--surface)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+  },
+  contextTitle: {
+    fontSize: 11,
+    fontWeight: 700,
+    color: 'var(--text)',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.06em',
+  },
+  contextDesc: {
+    fontSize: 13,
+    color: 'var(--text-muted)',
+    lineHeight: 1.5,
+  },
   stepCard: {
     background: 'var(--surface)', border: '1px solid var(--border)',
     borderRadius: 16, padding: '28px 28px 24px',
@@ -556,5 +719,14 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '10px 20px', borderRadius: 10,
     border: '1px solid var(--border)', background: 'transparent',
     color: 'var(--text)', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+  },
+  autofixBtn: {
+    marginTop: 4,
+    padding: '9px 18px', borderRadius: 10,
+    border: '1px solid var(--border)', background: 'var(--surface-2)',
+    color: 'var(--text)', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+  },
+  fixMsg: {
+    marginTop: 4, fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic',
   },
 };

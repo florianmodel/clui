@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import type { InputBinding, ResolvedExecution } from '@gui-bridge/shared';
 import { DockerManager } from '../docker/DockerManager.js';
 import type { ExecutionResult, LogCallback } from '../docker/DockerManager.js';
 import type { IExecutor, ExecuteOptions, CaptureResult } from './IExecutor.js';
@@ -17,29 +18,53 @@ export class DockerExecutor implements IExecutor {
   ) {}
 
   async run(
-    command: string,
+    execution: ResolvedExecution,
     opts: ExecuteOptions,
     onLog: LogCallback,
   ): Promise<ExecutionResult> {
-    const { inputFiles = [], outputDir, env, timeoutMs } = opts;
+    const { inputBindings = [], outputDir, env, timeoutMs } = opts;
 
     const tempOutputDir = this.docker.createTempDir('output');
-    let inputDir: string | undefined;
-    let ownedInput = false;
+    const fileBindings = inputBindings.filter((binding) => binding.type === 'file_input');
+    const directoryBindings = inputBindings.filter((binding) => binding.type === 'directory_input');
 
-    if (inputFiles.length > 0) {
+    let inputDir: string | undefined;
+
+    if (fileBindings.length > 0) {
       inputDir = this.docker.createTempDir('input');
-      ownedInput = true;
-      for (const src of inputFiles) {
-        fs.copyFileSync(src, path.join(inputDir, path.basename(src)));
+      for (const binding of fileBindings) {
+        const stepDir = path.join(inputDir, binding.stepId);
+        fs.mkdirSync(stepDir, { recursive: true });
+        for (const src of binding.sourcePaths) {
+          fs.copyFileSync(src, path.join(stepDir, path.basename(src)));
+        }
       }
     }
+
+    const extraVolumes = directoryBindings.map((binding) => ({
+      hostPath: binding.sourcePaths[0],
+      containerPath: binding.containerDir,
+      readOnly: true,
+    }));
+
+    const command = execution.mode === 'shell'
+      ? [execution.shellScript ?? '']
+      : [execution.executable ?? '', ...(execution.args ?? [])];
+    const entrypoint = execution.mode === 'shell' ? ['sh', '-lc'] : [];
 
     try {
       const result = await this.docker.runCommand(
         this.imageTag,
-        [command],
-        { inputDir, outputDir: tempOutputDir, useShell: true, network: 'bridge', env, timeout: timeoutMs },
+        command,
+        {
+          inputDir,
+          outputDir: tempOutputDir,
+          extraVolumes,
+          entrypoint,
+          network: 'bridge',
+          env,
+          timeout: timeoutMs,
+        },
         onLog,
       );
 
@@ -56,7 +81,7 @@ export class DockerExecutor implements IExecutor {
 
       return { ...result, outputFiles };
     } finally {
-      if (ownedInput && inputDir) this.docker.removeTempDir(inputDir);
+      if (inputDir) this.docker.removeTempDir(inputDir);
       this.docker.removeTempDir(tempOutputDir);
     }
   }

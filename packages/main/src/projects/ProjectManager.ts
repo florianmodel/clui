@@ -9,6 +9,7 @@ import type {
   SearchResult,
   UISchema,
 } from '@gui-bridge/shared';
+import { describeExecution } from '@gui-bridge/shared';
 import { DockerManager } from '../docker/DockerManager.js';
 import { ImageBuilder } from '../docker/ImageBuilder.js';
 import { ProjectCloner } from '../github/ProjectCloner.js';
@@ -18,6 +19,7 @@ import { NativeAnalyzer } from '../analyzer/NativeAnalyzer.js';
 import type { ILLMClient } from '../analyzer/LLMClient.js';
 import { TemplateRegistry } from '../registry/index.js';
 import { KnownToolRegistry, NativeInstallManager } from '../native/index.js';
+import type { KnownToolEntry } from '../native/KnownToolRegistry.js';
 import { getProjectsDir } from '../paths.js';
 
 export class ProjectManager {
@@ -55,6 +57,7 @@ export class ProjectManager {
   ): Promise<ProjectMeta> {
     const projectId = `${owner}--${repo}`;
     const imageTag = `gui-bridge-${projectId}`.toLowerCase();
+    const knownEntry = KnownToolRegistry.lookup(projectId);
 
     const send = (
       stage: InstallProgressEvent['stage'],
@@ -109,6 +112,7 @@ export class ProjectManager {
           schemaPath,
           commitSha,
           schemaSource: 'registry',
+          analyzerCommand: this.buildAnalyzerCommand(stack, knownEntry),
         };
 
         this.saveMeta(meta);
@@ -118,7 +122,6 @@ export class ProjectManager {
 
       // Registry miss — run full pipeline
       // Decide: native or Docker?
-      const knownEntry = KnownToolRegistry.lookup(projectId);
       const dockerHealth = await this.docker.checkHealth();
       const useNative = !!knownEntry && !dockerHealth.ok;
 
@@ -178,7 +181,11 @@ export class ProjectManager {
         dump = await nativeAnalyzer.analyze(repoDir, nativeBinary);
       } else {
         const analyzer = new Analyzer(this.docker, this.scriptsDir);
-        dump = await analyzer.analyze(repoDir, imageTag);
+        dump = await analyzer.analyze(
+          repoDir,
+          imageTag,
+          this.buildAnalyzerCommand(stack, knownEntry),
+        );
       }
       send('analyzing', `Found ${dump.arguments.length} arguments, ${dump.subcommands.length} subcommands`);
 
@@ -193,7 +200,7 @@ export class ProjectManager {
       if (llmClient) {
         send('generating', 'Generating interface with AI…');
         try {
-          const schema = await llmClient.generateUISchema(dump, schemaImageKey);
+          const { schema } = await llmClient.generateUISchema(dump, schemaImageKey);
           schemaPath = path.join(this.projectsDir, projectId, 'schema.json');
           fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
           fs.writeFileSync(schemaPath, JSON.stringify(schema, null, 2), 'utf8');
@@ -224,6 +231,9 @@ export class ProjectManager {
         schemaPath,
         commitSha,
         schemaSource,
+        analyzerCommand: useNative && nativeBinary
+          ? [nativeBinary]
+          : this.buildAnalyzerCommand(stack, knownEntry),
         ...(useNative && nativeBinary ? {
           executionMode: 'native' as const,
           nativeBinary,
@@ -271,18 +281,32 @@ export class ProjectManager {
       onProgress({ projectId, stage, message });
 
     send('analyzing', 'Analyzing CLI interface…');
-    const analyzer = new Analyzer(this.docker, this.scriptsDir);
-    const dump = await analyzer.analyze(meta.repoDir, meta.dockerImage);
+    let dump;
+    if (meta.executionMode === 'native' && meta.nativeBinary) {
+      const nativeAnalyzer = new NativeAnalyzer(this.scriptsDir);
+      dump = await nativeAnalyzer.analyze(meta.repoDir, meta.nativeBinary);
+    } else {
+      const analyzer = new Analyzer(this.docker, this.scriptsDir);
+      dump = await analyzer.analyze(meta.repoDir, meta.dockerImage, meta.analyzerCommand);
+    }
 
     send('generating', 'Generating interface with AI…');
-    const schema = await llmClient.generateUISchema(dump, meta.dockerImage);
+    const schemaImageKey = meta.executionMode === 'native' && meta.nativeBinary
+      ? `native:${meta.nativeBinary}`
+      : meta.dockerImage;
+    const { schema } = await llmClient.generateUISchema(dump, schemaImageKey);
 
     const schemaPath = path.join(this.projectsDir, projectId, 'schema.json');
     fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
     fs.writeFileSync(schemaPath, JSON.stringify(schema, null, 2), 'utf8');
 
     // Update meta
-    const updatedMeta: ProjectMeta = { ...meta, status: 'ready', schemaPath, schemaSource: 'llm' };
+    const updatedMeta: ProjectMeta = {
+      ...meta,
+      status: 'ready',
+      schemaPath,
+      schemaSource: 'llm',
+    };
     this.saveMeta(updatedMeta);
     send('complete', 'Interface ready!');
 
@@ -334,10 +358,10 @@ export class ProjectManager {
   /** Returns false if any non-multiple file_input step lacks a {step_id} in any workflow command. */
   private isSchemaValid(schema: UISchema): boolean {
     for (const workflow of schema.workflows) {
-      const cmd = workflow.execute?.command ?? '';
+      const executionText = describeExecution(workflow);
       for (const step of workflow.steps) {
         if (step.type === 'file_input' && !step.multiple) {
-          if (!cmd.includes(`{${step.id}}`)) return false;
+          if (!executionText.includes(`{${step.id}}`)) return false;
         }
       }
     }
@@ -352,7 +376,9 @@ export class ProjectManager {
 
     const projectDir = path.join(this.projectsDir, projectId);
     if (fs.existsSync(projectDir)) {
-      fs.rmSync(projectDir, { recursive: true, force: true });
+      // Use the cloner's forceRemove (shell rm -rf) instead of fs.rmSync, which can
+      // throw ENOTEMPTY on macOS when Spotlight/fsevents holds a handle in .git/hooks.
+      await this.cloner.forceRemove(projectDir);
     }
   }
 
@@ -394,18 +420,35 @@ export class ProjectManager {
     send('cloning', 'Pulling latest changes…');
     await execAsync('git pull origin --ff-only', { cwd: meta.repoDir });
 
-    send('building', 'Rebuilding Docker image…');
-    await this.docker.removeImage(meta.dockerImage).catch(() => {});
-    await this.imageBuilder.buildForProject(projectId, meta.repoDir, StackDetector.detect(meta.repoDir), (line) => {
-      send('building', line);
-    });
+    const stack = StackDetector.detect(meta.repoDir);
+    const knownEntry = KnownToolRegistry.lookup(projectId);
+    const analyzerCommand = meta.executionMode === 'native' && meta.nativeBinary
+      ? [meta.nativeBinary]
+      : this.buildAnalyzerCommand(stack, knownEntry);
+
+    if (meta.executionMode !== 'native') {
+      send('building', 'Rebuilding Docker image…');
+      await this.docker.removeImage(meta.dockerImage).catch(() => {});
+      await this.imageBuilder.buildForProject(projectId, meta.repoDir, stack, (line) => {
+        send('building', line);
+      });
+    }
 
     send('analyzing', 'Re-analyzing CLI interface…');
-    const analyzer = new Analyzer(this.docker, this.scriptsDir);
-    const dump = await analyzer.analyze(meta.repoDir, meta.dockerImage);
+    let dump;
+    if (meta.executionMode === 'native' && meta.nativeBinary) {
+      const nativeAnalyzer = new NativeAnalyzer(this.scriptsDir);
+      dump = await nativeAnalyzer.analyze(meta.repoDir, meta.nativeBinary);
+    } else {
+      const analyzer = new Analyzer(this.docker, this.scriptsDir);
+      dump = await analyzer.analyze(meta.repoDir, meta.dockerImage, analyzerCommand);
+    }
 
     send('generating', 'Regenerating interface with AI…');
-    const schema = await llmClient.generateUISchema(dump, meta.dockerImage);
+    const schemaImageKey = meta.executionMode === 'native' && meta.nativeBinary
+      ? `native:${meta.nativeBinary}`
+      : meta.dockerImage;
+    const { schema } = await llmClient.generateUISchema(dump, schemaImageKey);
 
     const schemaPath = path.join(this.projectsDir, projectId, 'schema.json');
     fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
@@ -416,6 +459,7 @@ export class ProjectManager {
       status: 'ready',
       schemaPath,
       schemaSource: 'llm',
+      analyzerCommand,
       installedAt: new Date().toISOString(),
     };
     this.saveMeta(updatedMeta);
@@ -428,5 +472,15 @@ export class ProjectManager {
     const dir = path.join(this.projectsDir, meta.projectId);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify(meta, null, 2), 'utf8');
+  }
+
+  private buildAnalyzerCommand(
+    stack: ReturnType<typeof StackDetector.detect>,
+    knownEntry: KnownToolEntry | null,
+  ): string[] | undefined {
+    if (knownEntry) {
+      return [knownEntry.binary];
+    }
+    return stack.analyzerCommand;
   }
 }
