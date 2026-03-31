@@ -2,10 +2,11 @@ import type { CapabilityDump, UISchema } from '@gui-bridge/shared';
 import { buildSchemaGenerationPrompt, buildRefinementPrompt } from './prompts/generate-schema.js';
 import { SchemaValidator } from './SchemaValidator.js';
 import type { ILLMClient } from './LLMClient.js';
+import { MODELS, TOKEN_LIMITS } from './models.js';
 
 const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
-const MODEL = 'gpt-4o-mini';
-const MAX_TOKENS = 8192;
+const MODEL = MODELS.openai;
+const MAX_TOKENS = TOKEN_LIMITS.schemaGeneration;
 
 /** OpenAI-compatible LLM client using gpt-4o-mini. */
 export class OpenAIClient implements ILLMClient {
@@ -16,9 +17,11 @@ export class OpenAIClient implements ILLMClient {
     this.apiKey = apiKey;
   }
 
-  async generateUISchema(dump: CapabilityDump, dockerImage: string): Promise<UISchema> {
+  async generateUISchema(dump: CapabilityDump, dockerImage: string): Promise<{ schema: UISchema; warnings: string[] }> {
     const text = await this.complete(buildSchemaGenerationPrompt(dump, dockerImage));
-    return this.validator.parse(text);
+    const { schema, warnings } = this.validator.parseWithWarnings(text);
+    schema.dockerImage = dockerImage;
+    return { schema, warnings };
   }
 
   async refineUISchema(
@@ -28,16 +31,19 @@ export class OpenAIClient implements ILLMClient {
     feedback?: string,
   ): Promise<UISchema> {
     const text = await this.complete(buildRefinementPrompt(currentSchema, dump, feedback));
-    const refined = this.validator.parse(text);
+    const { schema: refined, warnings } = this.validator.parseWithWarnings(text);
+    if (warnings.length > 0) {
+      throw new Error(`Refined schema is invalid: ${warnings.join('; ')}`);
+    }
     refined.dockerImage = dockerImage;
     return refined;
   }
 
-  async rawComplete(prompt: string): Promise<string> {
-    return this.complete(prompt, 256);
+  async rawComplete(prompt: string, maxTokens?: number): Promise<string> {
+    return this.complete(prompt, maxTokens ?? TOKEN_LIMITS.commandFix);
   }
 
-  private async complete(content: string, maxTokens = MAX_TOKENS): Promise<string> {
+  private async complete(content: string, maxTokens: number = MAX_TOKENS): Promise<string> {
     const res = await fetch(OPENAI_API_URL, {
       method: 'POST',
       headers: {
@@ -59,7 +65,11 @@ export class OpenAIClient implements ILLMClient {
     const data = (await res.json()) as {
       choices: Array<{ message: { content: string } }>;
     };
-    return data.choices[0]?.message?.content ?? '';
+    const responseContent = data.choices?.[0]?.message?.content;
+    if (!responseContent) {
+      throw new Error(`OpenAI returned no content (choices length: ${data.choices?.length ?? 0})`);
+    }
+    return responseContent;
   }
 
   static async validateKey(apiKey: string): Promise<{ ok: boolean; error?: string }> {

@@ -59,6 +59,7 @@ export function App() {
   const [progressEvents, setProgressEvents] = useState<AnalysisProgressEvent[]>([]);
   const [generatedDump, setGeneratedDump] = useState<CapabilityDump | null>(null);
   const [generatedSchema, setGeneratedSchema] = useState<UISchema | null>(null);
+  const [schemaWarnings, setSchemaWarnings] = useState<string[]>([]);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
   const [pendingRepoDir, setPendingRepoDir] = useState('');
   const [pendingDockerImage, setPendingDockerImage] = useState('');
@@ -302,6 +303,7 @@ export function App() {
       }
 
       setGeneratedSchema(genRes.schema);
+      setSchemaWarnings(genRes.warnings ?? []);
       setProgressEvents((prev) => [...prev, { stage: 'complete', message: 'UI schema generated.' }]);
       setTimeout(() => setAnalyzePhase('review'), 600);
     } catch (err) {
@@ -429,7 +431,8 @@ export function App() {
           <SchemaReview
             schema={generatedSchema}
             dump={generatedDump}
-            onApprove={(s) => { setGeneratedSchema(s); setAnalyzePhase('ready'); }}
+            warnings={schemaWarnings}
+            onApprove={(s) => { setGeneratedSchema(s); setSchemaWarnings([]); setAnalyzePhase('ready'); }}
             onBack={() => { setAnalyzePhase('idle'); setAnalyzeError(null); }}
           />
         );
@@ -474,6 +477,7 @@ export function App() {
     return (
       <SimpleApp
         theme={theme}
+        onToggleTheme={toggleTheme}
         onSwitchToClassic={toggleUiMode}
       />
     );

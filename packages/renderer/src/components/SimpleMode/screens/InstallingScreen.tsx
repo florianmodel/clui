@@ -44,18 +44,24 @@ export function InstallingScreen({ owner, repo, projectName, onComplete, onBack 
   const label = STAGE_LABELS[stage] ?? message;
 
   useEffect(() => {
-    // Kick off install
-    void window.electronAPI.projects.install({
-      owner,
-      repo,
-      searchResult: {
-        owner, repo,
-        fullName: `${owner}/${repo}`,
-        description: projectName,
-        stars: 0, language: '', topics: [],
-        lastUpdated: new Date().toISOString(),
-        htmlUrl: `https://github.com/${owner}/${repo}`,
-      },
+    // Fresh install or schema generation for an already-installed project with no UI yet
+    void window.electronAPI.projects.get({ projectId }).then((existing) => {
+      if (existing.ok && existing.meta?.status === 'no-schema') {
+        return window.electronAPI.projects.generateUi({ projectId });
+      }
+
+      return window.electronAPI.projects.install({
+        owner,
+        repo,
+        searchResult: {
+          owner, repo,
+          fullName: `${owner}/${repo}`,
+          description: projectName,
+          stars: 0, language: '', topics: [],
+          lastUpdated: new Date().toISOString(),
+          htmlUrl: `https://github.com/${owner}/${repo}`,
+        },
+      });
     });
 
     // Subscribe to progress events

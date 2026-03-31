@@ -151,6 +151,7 @@ setup(
       const info = StackDetector.detect(tmpDir);
       expect(info.entrypointConfidence).toBe(0.9);
       expect(info.entrypoint).toContain('myapp');
+      expect(info.analyzerCommand).toEqual(['python', '-m', 'myapp.cli']);
     });
 
     it('returns confidence 0 when no entrypoint found', () => {
@@ -173,6 +174,47 @@ setup(
       writeFile(tmpDir, 'Cargo.toml', '[package]');
       const info = StackDetector.detect(tmpDir);
       expect(info.entrypoint).toBeUndefined();
+    });
+  });
+
+  describe('analyzer command detection', () => {
+    it('detects Node bin entrypoints from package.json', () => {
+      writeFile(tmpDir, 'package.json', JSON.stringify({
+        name: 'clipper',
+        version: '1.0.0',
+        bin: 'bin/clipper.js',
+      }));
+
+      const info = StackDetector.detect(tmpDir);
+      expect(info.analyzerCommand).toEqual(['node', './bin/clipper.js']);
+    });
+
+    it('detects the first named Node bin entry', () => {
+      writeFile(tmpDir, 'package.json', JSON.stringify({
+        name: 'clipper',
+        version: '1.0.0',
+        bin: {
+          clipper: 'dist/cli.js',
+          helper: 'dist/helper.js',
+        },
+      }));
+
+      const info = StackDetector.detect(tmpDir);
+      expect(info.analyzerCommand).toEqual(['node', './dist/cli.js']);
+    });
+
+    it('detects Rust binary names from Cargo.toml', () => {
+      writeFile(tmpDir, 'Cargo.toml', '[package]\nname = "media-tool"\n');
+
+      const info = StackDetector.detect(tmpDir);
+      expect(info.analyzerCommand).toEqual(['/usr/local/bin/media-tool']);
+    });
+
+    it('uses the fixed Go analyzer binary path', () => {
+      writeFile(tmpDir, 'go.mod', 'module example.com/tool\ngo 1.21');
+
+      const info = StackDetector.detect(tmpDir);
+      expect(info.analyzerCommand).toEqual(['/usr/local/bin/app']);
     });
   });
 });

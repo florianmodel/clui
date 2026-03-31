@@ -17,6 +17,8 @@ export interface RunOptions {
   timeout?: number;    // ms, default 5 minutes
   /** Run command via sh -c, overriding any image ENTRYPOINT. Handles shell quoting. */
   useShell?: boolean;
+  /** Explicit ENTRYPOINT override. Use [] to clear an image ENTRYPOINT. */
+  entrypoint?: string[];
   /** Docker network mode. Default: 'none'. Use 'bridge' for tools that need internet. */
   network?: string;
 }
@@ -53,7 +55,11 @@ export class DockerManager {
 
   async checkHealth(): Promise<{ ok: boolean; version?: string; error?: string }> {
     try {
-      const info = await this.docker.version();
+      // 5-second timeout prevents UI freeze when the Docker socket exists but the daemon hangs.
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Docker health check timed out after 5s')), 5_000),
+      );
+      const info = await Promise.race([this.docker.version(), timeoutPromise]);
       return { ok: true, version: info.Version };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -153,6 +159,7 @@ export class DockerManager {
       inputDir, outputDir, extraVolumes = [], env = {},
       timeout = 5 * 60 * 1000,
       useShell = false,
+      entrypoint,
       network = 'none',
     } = opts;
 
@@ -172,9 +179,11 @@ export class DockerManager {
     try {
       // When useShell=true, override the image's ENTRYPOINT so we run via sh -c.
       // This handles: image ENTRYPOINT conflicts, shell quoting, and compound commands.
-      const containerCmdConfig = useShell
-        ? { Entrypoint: ['sh', '-c'], Cmd: [command.join(' ')] }
-        : { Cmd: command };
+      const containerCmdConfig = entrypoint !== undefined
+        ? { Entrypoint: entrypoint, Cmd: command }
+        : useShell
+          ? { Entrypoint: ['sh', '-c'], Cmd: [command.join(' ')] }
+          : { Cmd: command };
 
       container = await this.docker.createContainer({
         Image: image,

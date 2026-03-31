@@ -7,11 +7,12 @@ import type { AnalysisProgressEvent } from '@gui-bridge/shared';
 interface SchemaReviewProps {
   schema: UISchema;
   dump: CapabilityDump;
+  warnings?: string[];
   onApprove: (schema: UISchema) => void;
   onBack: () => void;
 }
 
-export function SchemaReview({ schema, dump, onApprove, onBack }: SchemaReviewProps) {
+export function SchemaReview({ schema, dump, warnings, onApprove, onBack }: SchemaReviewProps) {
   const [feedback, setFeedback] = useState('');
   const [regenerating, setRegenerating] = useState(false);
   const [progressEvents, setProgressEvents] = useState<AnalysisProgressEvent[]>([]);
@@ -75,6 +76,23 @@ export function SchemaReview({ schema, dump, onApprove, onBack }: SchemaReviewPr
 
       {!regenerating && (
         <>
+          {/* Schema warnings from validator */}
+          {warnings && warnings.length > 0 && (
+            <div style={styles.warningBox}>
+              <div style={styles.warningTitle}>
+                ⚠ {warnings.length} issue{warnings.length > 1 ? 's' : ''} detected — auto-repaired where possible
+              </div>
+              <ul style={styles.warningList}>
+                {warnings.map((w, i) => (
+                  <li key={i} style={styles.warningItem}>{w}</li>
+                ))}
+              </ul>
+              <div style={styles.warningHint}>
+                If commands still fail at runtime, use "Regenerate" to produce a cleaner schema.
+              </div>
+            </div>
+          )}
+
           {/* Workflow summaries */}
           <div style={styles.workflows}>
             {currentSchema.workflows.map((wf, i) => (
@@ -181,4 +199,12 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 8, padding: '10px 12px',
   },
   errorText: { fontSize: 12, color: 'var(--red)' },
+  warningBox: {
+    background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.35)',
+    borderRadius: 8, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 4,
+  },
+  warningTitle: { fontSize: 12, fontWeight: 700, color: '#f59e0b' },
+  warningList: { margin: 0, paddingLeft: 16, display: 'flex', flexDirection: 'column', gap: 2 },
+  warningItem: { fontSize: 11, color: '#f59e0b' },
+  warningHint: { fontSize: 11, color: 'var(--text-muted)', marginTop: 2 },
 };

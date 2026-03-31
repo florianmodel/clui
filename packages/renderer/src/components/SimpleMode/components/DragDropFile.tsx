@@ -1,7 +1,8 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 
 interface Props {
   multiple?: boolean;
+  directory?: boolean;
   accept?: string;
   value: string[];          // host file paths
   onChange: (paths: string[]) => void;
@@ -9,23 +10,28 @@ interface Props {
   description?: string;
 }
 
-export function DragDropFile({ multiple, accept, value, onChange, label }: Props) {
+export function DragDropFile({ multiple, directory, accept, value, onChange, label }: Props) {
   const [dragging, setDragging] = useState(false);
   const [fileNames, setFileNames] = useState<string[]>(value.map((p) => p.split('/').pop() ?? p));
+
+  useEffect(() => {
+    setFileNames(value.map((p) => p.split('/').pop() ?? p));
+  }, [value]);
 
   const handleFiles = useCallback(async (paths: string[]) => {
     if (!multiple) paths = paths.slice(0, 1);
     // Filter by accept extensions if provided
-    const filtered = accept
+    const filtered = !directory && accept
       ? paths.filter((p) => {
           const ext = '.' + p.split('.').pop()?.toLowerCase();
           return accept.split(',').some((a) => a.trim() === ext || a.trim() === '.*');
         })
       : paths;
     const names = filtered.map((p) => p.split('/').pop() ?? p);
+    const nextPaths = multiple ? [...value, ...filtered] : filtered;
     setFileNames(multiple ? [...fileNames, ...names] : names);
-    onChange(multiple ? [...value, ...filtered] : filtered);
-  }, [multiple, accept, value, fileNames, onChange]);
+    onChange(nextPaths);
+  }, [multiple, directory, accept, value, fileNames, onChange]);
 
   function handleDragOver(e: React.DragEvent) {
     e.preventDefault();
@@ -50,7 +56,9 @@ export function DragDropFile({ multiple, accept, value, onChange, label }: Props
     const res = await window.electronAPI.files.pick({
       title: `Choose ${label}`,
       filters: extensions.length ? extensions : undefined,
-      properties: multiple ? ['openFile', 'multiSelections'] : ['openFile'],
+      properties: directory
+        ? ['openDirectory']
+        : multiple ? ['openFile', 'multiSelections'] : ['openFile'],
     });
     if (!res.canceled) handleFiles(res.filePaths);
   }
@@ -80,9 +88,9 @@ export function DragDropFile({ multiple, accept, value, onChange, label }: Props
         {!hasFiles ? (
           <>
             <div style={styles.dropIcon}>📁</div>
-            <div style={styles.dropTitle}>Drag your {multiple ? 'files' : 'file'} here</div>
+            <div style={styles.dropTitle}>Drag your {directory ? 'folder' : multiple ? 'files' : 'file'} here</div>
             <div style={styles.dropSub}>or click to browse</div>
-            {accept && <div style={styles.dropAccept}>{accept}</div>}
+            {!directory && accept && <div style={styles.dropAccept}>{accept}</div>}
           </>
         ) : (
           <div style={styles.fileList}>

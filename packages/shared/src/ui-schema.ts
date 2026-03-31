@@ -53,7 +53,10 @@ export interface Step {
 }
 
 export interface ExecutionConfig {
-  command: string;              // Template with {step_id} placeholders
+  executable?: string;          // Preferred: binary or interpreter (e.g. "ffmpeg", "python")
+  args?: string[];              // Preferred: argv template with {step_id} placeholders
+  shellScript?: string;         // Explicit shell mode, reserved for loops / batch workflows
+  command?: string;             // Legacy flat command template (migrated at runtime)
   outputDir: string;            // Container path (usually /output)
   outputPattern?: string;       // Glob for expected output files
   successMessage?: string;

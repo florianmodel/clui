@@ -55,12 +55,26 @@ import {
   type ProjectApplyUpdateResponse,
   type FileGetInfoRequest,
   type FileGetInfoResponse,
+  type FileScanRequest,
+  type FileScanResponse,
+  type FileListRecentsResponse,
+  type FileApplyChangesRequest,
+  type FileApplyChangesResponse,
   type AppConfirmRequest,
   type AppConfirmResponse,
   type AppNotifyRequest,
   type DockerStatusEvent,
   type InstallProgressEvent,
   type NativeCapabilities,
+  type ErrorLogGetResponse,
+  type FolderScanRequest,
+  type FolderScanResponse,
+  type FolderListRecentsResponse,
+  type FolderRunRequest,
+  type FolderRunResponse,
+  type FolderRunLogEvent,
+  type FolderRunCompleteEvent,
+  type FolderRunUrlEvent,
 } from '@gui-bridge/shared';
 
 // ── Drag-and-drop path resolution (Electron 32+) ──────────────────────────────
@@ -92,6 +106,11 @@ export interface ElectronAPI {
   app: {
     getDesktopPath: () => Promise<string>;
     notify: (req: AppNotifyRequest) => Promise<void>;
+    openExternal: (url: string) => Promise<void>;
+  };
+  errorLog: {
+    get: () => Promise<ErrorLogGetResponse>;
+    clear: () => Promise<void>;
   };
   docker: {
     checkHealth: () => Promise<DockerHealthResponse>;
@@ -123,6 +142,9 @@ export interface ElectronAPI {
     showInFinder: (filePath: string) => Promise<void>;
     open: (filePath: string) => Promise<void>;
     getInfo: (req: FileGetInfoRequest) => Promise<FileGetInfoResponse>;
+    scan: (req: FileScanRequest) => Promise<FileScanResponse>;
+    listRecents: () => Promise<FileListRecentsResponse>;
+    applyChanges: (req: FileApplyChangesRequest) => Promise<FileApplyChangesResponse>;
     /** Electron 32+: returns paths resolved from the most recent drop event. */
     getLastDroppedPaths: () => string[];
   };
@@ -135,6 +157,12 @@ export interface ElectronAPI {
   github: {
     search: (req: GithubSearchRequest) => Promise<GithubSearchResponse>;
     recommend: (req: GithubRecommendRequest) => Promise<GithubRecommendResponse>;
+  };
+  folder: {
+    scan: (req: FolderScanRequest) => Promise<FolderScanResponse>;
+    listRecents: () => Promise<FolderListRecentsResponse>;
+    run: (req: FolderRunRequest) => Promise<FolderRunResponse>;
+    cancel: () => Promise<void>;
   };
   native: {
     checkCapabilities: () => Promise<NativeCapabilities>;
@@ -157,6 +185,9 @@ export interface ElectronAPI {
   on: {
     log: (callback: (event: ExecLogEvent) => void) => () => void;
     complete: (callback: (event: ExecCompleteEvent) => void) => () => void;
+    folderRunLog: (callback: (event: FolderRunLogEvent) => void) => () => void;
+    folderRunComplete: (callback: (event: FolderRunCompleteEvent) => void) => () => void;
+    folderRunUrl: (callback: (event: FolderRunUrlEvent) => void) => () => void;
     analysisProgress: (callback: (event: AnalysisProgressEvent) => void) => () => void;
     installProgress: (callback: (event: InstallProgressEvent) => void) => () => void;
     dockerStatus: (callback: (event: DockerStatusEvent) => void) => () => void;
@@ -168,6 +199,12 @@ const api: ElectronAPI = {
   app: {
     getDesktopPath: () => ipcRenderer.invoke(IPCChannel.APP_GET_PATH, 'desktop'),
     notify: (req: AppNotifyRequest) => ipcRenderer.invoke(IPCChannel.APP_NOTIFY, req),
+    openExternal: (url: string) => ipcRenderer.invoke(IPCChannel.APP_OPEN_EXTERNAL, url),
+  },
+
+  errorLog: {
+    get: () => ipcRenderer.invoke(IPCChannel.ERROR_LOG_GET),
+    clear: () => ipcRenderer.invoke(IPCChannel.ERROR_LOG_CLEAR),
   },
 
   docker: {
@@ -226,6 +263,12 @@ const api: ElectronAPI = {
       ipcRenderer.invoke(IPCChannel.FILE_OPEN, filePath),
     getInfo: (req: FileGetInfoRequest) =>
       ipcRenderer.invoke(IPCChannel.FILE_GET_INFO, req),
+    scan: (req: FileScanRequest) =>
+      ipcRenderer.invoke(IPCChannel.FILE_SCAN, req),
+    listRecents: () =>
+      ipcRenderer.invoke(IPCChannel.FILE_LIST_RECENTS),
+    applyChanges: (req: FileApplyChangesRequest) =>
+      ipcRenderer.invoke(IPCChannel.FILE_APPLY_CHANGES, req),
     getLastDroppedPaths: () => lastDroppedPaths,
   },
 
@@ -244,6 +287,17 @@ const api: ElectronAPI = {
       ipcRenderer.invoke(IPCChannel.GITHUB_SEARCH, req),
     recommend: (req: GithubRecommendRequest) =>
       ipcRenderer.invoke(IPCChannel.GITHUB_RECOMMEND, req),
+  },
+
+  folder: {
+    scan: (req: FolderScanRequest) =>
+      ipcRenderer.invoke(IPCChannel.FOLDER_SCAN, req),
+    listRecents: () =>
+      ipcRenderer.invoke(IPCChannel.FOLDER_LIST_RECENTS),
+    run: (req: FolderRunRequest) =>
+      ipcRenderer.invoke(IPCChannel.FOLDER_RUN, req),
+    cancel: () =>
+      ipcRenderer.invoke(IPCChannel.FOLDER_CANCEL),
   },
 
   native: {
@@ -291,6 +345,24 @@ const api: ElectronAPI = {
       const listener = (_: Electron.IpcRendererEvent, event: ExecCompleteEvent) => callback(event);
       ipcRenderer.on(IPCChannel.EXEC_COMPLETE, listener);
       return () => ipcRenderer.removeListener(IPCChannel.EXEC_COMPLETE, listener);
+    },
+
+    folderRunLog: (callback: (event: FolderRunLogEvent) => void) => {
+      const listener = (_: Electron.IpcRendererEvent, event: FolderRunLogEvent) => callback(event);
+      ipcRenderer.on(IPCChannel.FOLDER_RUN_LOG, listener);
+      return () => ipcRenderer.removeListener(IPCChannel.FOLDER_RUN_LOG, listener);
+    },
+
+    folderRunComplete: (callback: (event: FolderRunCompleteEvent) => void) => {
+      const listener = (_: Electron.IpcRendererEvent, event: FolderRunCompleteEvent) => callback(event);
+      ipcRenderer.on(IPCChannel.FOLDER_RUN_COMPLETE, listener);
+      return () => ipcRenderer.removeListener(IPCChannel.FOLDER_RUN_COMPLETE, listener);
+    },
+
+    folderRunUrl: (callback: (event: FolderRunUrlEvent) => void) => {
+      const listener = (_: Electron.IpcRendererEvent, event: FolderRunUrlEvent) => callback(event);
+      ipcRenderer.on(IPCChannel.FOLDER_RUN_URL, listener);
+      return () => ipcRenderer.removeListener(IPCChannel.FOLDER_RUN_URL, listener);
     },
 
     analysisProgress: (callback: (event: AnalysisProgressEvent) => void) => {

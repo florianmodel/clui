@@ -23,7 +23,7 @@ export class Analyzer {
    * 3. Run framework-specific introspector (if Python)
    * 4. Fallback: run --help and parse output
    */
-  async analyze(repoDir: string, dockerImage: string): Promise<CapabilityDump> {
+  async analyze(repoDir: string, dockerImage: string, analyzerCommand?: string[]): Promise<CapabilityDump> {
     const warnings: string[] = [];
 
     // Step 1: stack detection (host FS reads)
@@ -33,7 +33,12 @@ export class Analyzer {
     const readme = ReadmeParser.parse(repoDir);
 
     // Step 3: get --help output (always useful, also serves as fallback)
-    const helpText = await this.getHelpText(dockerImage, stack.entrypoint, warnings);
+    const helpText = await this.getHelpText(
+      dockerImage,
+      stack.entrypoint,
+      analyzerCommand ?? stack.analyzerCommand,
+      warnings,
+    );
 
     // Step 4: framework-specific introspection
     let introspectionMethod: CapabilityDump['introspectionMethod'] = 'none';
@@ -71,6 +76,7 @@ export class Analyzer {
         entrypoint: stack.entrypoint,
         entrypointConfidence: stack.entrypointConfidence,
         keyFiles: stack.keyFiles,
+        analyzerCommand: analyzerCommand ?? stack.analyzerCommand,
       },
       readme: {
         description: readme.description,
@@ -89,12 +95,17 @@ export class Analyzer {
   private async getHelpText(
     dockerImage: string,
     entrypoint: string | undefined,
+    analyzerCommand: string[] | undefined,
     warnings: string[],
   ): Promise<string> {
     // Derive a candidate binary name from the image tag (e.g. "gui-bridge/yt-dlp" → "yt-dlp")
     const imageBin = dockerImage.split('/').pop()?.split(':')[0] ?? '';
 
     const commands: string[][] = [];
+
+    if (analyzerCommand && analyzerCommand.length > 0) {
+      commands.push([...analyzerCommand, '--help']);
+    }
 
     // 1. ENTRYPOINT --help (works when Dockerfile sets ENTRYPOINT — most reliable)
     commands.push(['--help']);
@@ -118,7 +129,7 @@ export class Analyzer {
         const result = await this.docker.runCommand(
           dockerImage,
           cmd,
-          { timeout: 15_000 },
+          { timeout: 15_000, entrypoint: cmd[0] === '--help' ? undefined : [] },
           () => {},
         );
         const output = (result.stdout + result.stderr).trim();
@@ -192,7 +203,8 @@ export class Analyzer {
     llmClient: ILLMClient,
     onProgress: (event: AnalysisProgressEvent) => void,
     options?: { forceRegenerate?: boolean },
-  ): Promise<UISchema> {
+    analyzerCommand?: string[],
+  ): Promise<{ schema: UISchema; warnings: string[] }> {
     const cacheKey = SchemaCache.buildKey(repoDir, dockerImage);
 
     // Check cache first
@@ -200,13 +212,13 @@ export class Analyzer {
       const cached = this.schemaCache.get(cacheKey);
       if (cached) {
         onProgress({ stage: 'complete', message: 'Loaded from cache.' });
-        return cached;
+        return { schema: cached, warnings: [] };
       }
     }
 
     // Step 1: static analysis
     onProgress({ stage: 'detecting', message: 'Detecting language and framework…' });
-    const dump = await this.analyze(repoDir, dockerImage);
+    const dump = await this.analyze(repoDir, dockerImage, analyzerCommand);
     this.schemaCache.saveDump(cacheKey, dump);
 
     // Step 2: LLM schema generation
@@ -215,13 +227,18 @@ export class Analyzer {
       message: 'Generating UI with AI…',
       detail: `${dump.arguments.length} args · ${dump.subcommands.length} subcommands`,
     });
-    const schema = await llmClient.generateUISchema(dump, dockerImage);
+    const { schema, warnings } = await llmClient.generateUISchema(dump, dockerImage);
+
+    // If the LLM did a repair pass, let the user know
+    if (warnings.some(w => w.includes('placeholder mismatch') || w.includes('multi-file'))) {
+      onProgress({ stage: 'generating-ui', message: 'Repairing schema issues…' });
+    }
 
     // Save to cache
     this.schemaCache.save(cacheKey, schema);
     onProgress({ stage: 'complete', message: 'UI schema generated.' });
 
-    return schema;
+    return { schema, warnings };
   }
 
   /**
@@ -234,6 +251,7 @@ export class Analyzer {
     llmClient: ILLMClient,
     onProgress: (event: AnalysisProgressEvent) => void,
     feedback?: string,
+    analyzerCommand?: string[],
   ): Promise<UISchema> {
     const cacheKey = SchemaCache.buildKey(repoDir, dockerImage);
 
@@ -241,12 +259,13 @@ export class Analyzer {
 
     // Load dump from cache if available, otherwise re-analyze
     let dump: CapabilityDump;
-    const cachedDump = this.schemaCache.get(cacheKey + '-dump');
+    const cachedDump = this.schemaCache.getDump(cacheKey);
     if (cachedDump) {
-      dump = cachedDump as unknown as CapabilityDump;
+      dump = cachedDump;
     } else {
       onProgress({ stage: 'detecting', message: 'Re-analyzing tool…' });
-      dump = await this.analyze(repoDir, dockerImage);
+      dump = await this.analyze(repoDir, dockerImage, analyzerCommand);
+      this.schemaCache.saveDump(cacheKey, dump);
     }
 
     const refined = await llmClient.refineUISchema(currentSchema, dump, dockerImage, feedback);

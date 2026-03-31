@@ -2,8 +2,18 @@
 // Main process uses ipcMain.handle() for request/response channels.
 // Main process uses webContents.send() for push channels (streaming).
 
-import type { UISchema, Workflow } from './ui-schema.js';
+import type { ExecutionConfig, UISchema, Workflow } from './ui-schema.js';
 import type { CapabilityDump } from './capability-dump.js';
+import type {
+  FileAction,
+  FileChanges,
+  FileContext,
+  FileKind,
+  FolderAction,
+  FolderContext,
+  RecentFile,
+  RecentFolder,
+} from './finder-types.js';
 
 export enum IPCChannel {
   // Docker — request/response via ipcMain.handle
@@ -74,6 +84,7 @@ export enum IPCChannel {
   APP_CONFIRM = 'app:confirm',
   APP_CLIPBOARD_WRITE = 'app:clipboardWrite',
   APP_NOTIFY = 'app:notify',
+  APP_OPEN_EXTERNAL = 'app:openExternal',
 
   // Files — request/response
   FILE_PICK = 'file:pick',
@@ -82,9 +93,25 @@ export enum IPCChannel {
   FILE_SHOW_IN_FINDER = 'file:showInFinder',
   FILE_OPEN = 'file:open',
   FILE_GET_INFO = 'file:getInfo',
+  FILE_SCAN = 'file:scan',
+  FILE_LIST_RECENTS = 'file:listRecents',
+  FILE_APPLY_CHANGES = 'file:applyChanges',
 
   // Docker status push (main → renderer)
   DOCKER_STATUS = 'docker:status',
+
+  // Local error log (testing / pre-release debugging)
+  ERROR_LOG_GET = 'errorLog:get',
+  ERROR_LOG_CLEAR = 'errorLog:clear',
+
+  // Finder mode
+  FOLDER_SCAN = 'folder:scan',
+  FOLDER_LIST_RECENTS = 'folder:listRecents',
+  FOLDER_RUN = 'folder:run',
+  FOLDER_CANCEL = 'folder:cancel',
+  FOLDER_RUN_LOG = 'folder:runLog',
+  FOLDER_RUN_COMPLETE = 'folder:runComplete',
+  FOLDER_RUN_URL = 'folder:runUrl',
 }
 
 // Re-export for convenience in handlers
@@ -132,17 +159,20 @@ export interface DockerBuildResponse {
 
 export interface ExecRunResponse {
   ok: boolean;
+  runId?: string;
   containerId?: string;
   error?: string;
 }
 
 export interface ExecLogEvent {
+  runId: string;
   stream: 'stdout' | 'stderr' | 'system';
   line: string;
   timestamp: number;
 }
 
 export interface ExecCompleteEvent {
+  runId: string;
   exitCode: number;
   outputFiles: string[]; // absolute host paths
   error?: string;
@@ -220,6 +250,8 @@ export interface SchemaGenerateResponse {
   schema?: UISchema;
   error?: string;
   fromCache?: boolean;
+  /** Non-fatal warnings from schema validation (e.g. repaired placeholders, multi-file issues) */
+  warnings?: string[];
 }
 
 export interface WindowConfig {
@@ -278,13 +310,19 @@ export interface ExecAutofixRequest {
   workflow: Workflow;
   failedCommand: string;
   errorOutput: string;
+  /** Actual form values the user entered — gives LLM concrete file/value context */
+  inputValues?: Record<string, unknown>;
+  /** Validator warnings from schema generation (helps LLM understand pre-existing issues) */
+  schemaWarnings?: string[];
 }
 
 export interface ExecAutofixResponse {
   ok: boolean;
-  template?: string;
+  execute?: Pick<ExecutionConfig, 'executable' | 'args' | 'shellScript'>;
   explanation?: string;
   error?: string;
+  /** Error classification from the diagnosis step */
+  diagnosis?: { errorClass: string; shortReason: string };
 }
 
 export interface SchemaSaveRequest {
@@ -353,6 +391,8 @@ export interface ProjectMeta {
   nativeBinary?: string;
   /** Detected version of the natively-installed binary */
   nativeVersion?: string;
+  /** Explicit invocation used for CLI analysis / help collection. */
+  analyzerCommand?: string[];
 }
 
 export interface InstallProgressEvent {
@@ -425,7 +465,7 @@ export interface ProjectImproveResponse {
 
 // ── File info ──────────────────────────────────────────────────────────────────
 
-export type FileType = 'image' | 'video' | 'audio' | 'document' | 'data' | 'other';
+export type FileType = FileKind;
 
 export interface FileInfo {
   name: string;
@@ -464,6 +504,79 @@ export interface AppConfirmResponse {
 export interface AppNotifyRequest {
   title: string;
   body: string;
+}
+
+// ── Finder mode ───────────────────────────────────────────────────────────────
+
+export interface FolderScanRequest {
+  folderPath: string;
+}
+
+export interface FolderScanResponse {
+  ok: boolean;
+  context?: FolderContext;
+  error?: string;
+}
+
+export interface FolderListRecentsResponse {
+  recents: RecentFolder[];
+}
+
+export interface FolderRunRequest {
+  folderPath: string;
+  actionId: string;
+}
+
+export interface FolderRunResponse {
+  ok: boolean;
+  runId?: string;
+  action?: FolderAction;
+  error?: string;
+}
+
+export interface FolderRunLogEvent {
+  runId: string;
+  stream: 'stdout' | 'stderr' | 'system';
+  line: string;
+  timestamp: number;
+}
+
+export interface FolderRunUrlEvent {
+  runId: string;
+  url: string;
+  timestamp: number;
+}
+
+export interface FolderRunCompleteEvent {
+  runId: string;
+  exitCode: number;
+  error?: string;
+  canceled?: boolean;
+}
+
+export interface FileScanRequest {
+  filePath: string;
+}
+
+export interface FileScanResponse {
+  ok: boolean;
+  context?: FileContext;
+  error?: string;
+}
+
+export interface FileListRecentsResponse {
+  recents: RecentFile[];
+}
+
+export interface FileApplyChangesRequest {
+  filePath: string;
+  changes: FileChanges;
+}
+
+export interface FileApplyChangesResponse {
+  ok: boolean;
+  context?: FileContext;
+  error?: string;
 }
 
 // ── Workflow add (LLM-powered) ─────────────────────────────────────────────────
@@ -565,4 +678,37 @@ export interface ProjectApplyUpdateResponse {
 export interface DockerStatusEvent {
   running: boolean;
   version?: string;
+}
+
+// ── Local error log ────────────────────────────────────────────────────────────
+
+export type ErrorCategory =
+  | 'run-failure'
+  | 'run-crash'
+  | 'autofix-failed'
+  | 'autofix-applied'
+  | 'autofix-rerun-ok'
+  | 'autofix-rerun-fail'
+  | 'schema-warnings'
+  | 'schema-error'
+  | 'install-error'
+  | 'analyzer-error';
+
+export interface ErrorRecord {
+  id: string;
+  timestamp: string;
+  category: ErrorCategory;
+  projectId?: string;
+  workflowId?: string;
+  message: string;
+  detail?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ErrorLogGetResponse {
+  records: ErrorRecord[];
+  /** Absolute path to the log file — so user can open it in Finder */
+  logPath: string;
+  /** Total count (before any truncation for the response) */
+  total: number;
 }

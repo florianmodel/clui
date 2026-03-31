@@ -58,7 +58,7 @@ export function WelcomeScreen({ installedProjects, onIntent, onOpenProject }: Pr
     inputRef.current?.focus();
   }
 
-  const readyProjects = installedProjects.filter((p) => p.status === 'ready');
+  const visibleProjects = installedProjects.filter((p) => p.status === 'ready' || p.status === 'no-schema');
 
   return (
     <div style={styles.root}>
@@ -121,11 +121,11 @@ export function WelcomeScreen({ installedProjects, onIntent, onOpenProject }: Pr
         </div>
 
         {/* Installed tools */}
-        {readyProjects.length > 0 && (
+        {visibleProjects.length > 0 && (
           <div style={styles.toolsSection}>
             <div style={styles.toolsSectionTitle}>Your tools</div>
             <div style={styles.toolsGrid}>
-              {readyProjects.slice(0, 6).map((p) => (
+              {visibleProjects.slice(0, 6).map((p) => (
                 <button
                   key={p.projectId}
                   type="button"
@@ -140,7 +140,9 @@ export function WelcomeScreen({ installedProjects, onIntent, onOpenProject }: Pr
                   <span style={styles.toolIcon}>{getToolIcon(p.repo)}</span>
                   <div style={styles.toolInfo}>
                     <div style={styles.toolName}>{friendlyName(p.repo)}</div>
-                    <div style={styles.toolDesc}>{truncate(p.description, 40)}</div>
+                    <div style={styles.toolDesc}>
+                      {p.status === 'no-schema' ? 'Needs interface generation' : truncate(p.description, 40)}
+                    </div>
                   </div>
                   <span style={{
                     ...styles.toolArrow,

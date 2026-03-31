@@ -1,4 +1,4 @@
-import type { UISchema } from '@gui-bridge/shared';
+import { describeExecution, type UISchema } from '@gui-bridge/shared';
 
 /**
  * Build a prompt asking Claude to generate a single new Workflow for an existing project.
@@ -7,7 +7,7 @@ import type { UISchema } from '@gui-bridge/shared';
  */
 export function buildAddWorkflowPrompt(description: string, schema: UISchema): string {
   const existingSummary = schema.workflows.map((wf) => (
-    `  - "${wf.name}": ${wf.execute.command}`
+    `  - "${wf.name}": ${describeExecution(wf)}`
   )).join('\n');
 
   return `You are a UX expert adding a new workflow to an existing CLI tool's GUI.
@@ -29,11 +29,13 @@ The user wants to: "${description}"
 3. If not feasible: explain briefly why (≤20 words).
 
 ## Command template rules — MUST follow:
+- Use execute.executable + execute.args by default; use execute.shellScript only for real loops
 - Use {step_id} placeholders that exactly match your step IDs
-- Single file input: /input/{step_id} (expands to /input/filename at runtime)
-- Multiple files (multiple=true): iterate /input/ directly — NEVER use /input/{step_id} as a path
-  RIGHT: [f for f in os.listdir('/input') if f.endswith('.pdf')]
-  RIGHT: for f in /input/*.pdf; do tool "$f" -o /output/; done
+- Single file input path: /input/<step_id>/{step_id}
+- Multiple files (multiple=true): iterate /input/<step_id>/ directly
+  RIGHT: [f for f in os.listdir('/input/input_files') if f.endswith('.pdf')]
+  RIGHT: for f in /input/input_files/*.pdf; do tool "$f" -o /output/; done
+- Directory input path: /input/<step_id>
 - Output: always a FULL file path — NEVER write to bare '/output/'
   RIGHT: writer.write('/output/merged.pdf')
   RIGHT: -o /output/{output_step_id}
@@ -43,7 +45,7 @@ The user wants to: "${description}"
 ## Output format — respond with ONLY valid JSON (no markdown, no extra text):
 
 If feasible:
-{"feasible":true,"workflow":{"id":"workflow-id","name":"Workflow Name","description":"Brief.","steps":[{"id":"step_id","label":"Label","type":"file_input","required":true}],"execute":{"command":"tool /input/{step_id} -o /output/result.ext","outputDir":"/output","successMessage":"Done."}}}
+{"feasible":true,"workflow":{"id":"workflow-id","name":"Workflow Name","description":"Brief.","steps":[{"id":"step_id","label":"Label","type":"file_input","required":true}],"execute":{"executable":"tool","args":["/input/step_id/{step_id}","-o","/output/result.ext"],"outputDir":"/output","successMessage":"Done."}}}
 
 If not feasible:
 {"feasible":false,"reason":"Reason in 20 words or fewer."}`;

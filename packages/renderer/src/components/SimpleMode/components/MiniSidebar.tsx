@@ -12,8 +12,11 @@ interface Props {
   projects: ProjectMeta[];
   backgroundInstalls: BackgroundInstall[];
   activeProjectId?: string;
+  isFinderActive?: boolean;
   onSelectProject: (projectId: string) => void;
+  onUninstall: (projectId: string) => void;
   onNewTool: () => void;
+  onOpenFinder: () => void;
   onOpenSettings: () => void;
 }
 
@@ -33,16 +36,27 @@ function friendlyName(repo: string): string {
   return repo.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-export function MiniSidebar({ projects, backgroundInstalls, activeProjectId, onSelectProject, onNewTool, onOpenSettings }: Props) {
+export function MiniSidebar({ projects, backgroundInstalls, activeProjectId, isFinderActive, onSelectProject, onUninstall, onNewTool, onOpenFinder, onOpenSettings }: Props) {
   const [hovered, setHovered] = useState(false);
+  const [hoveredProjectId, setHoveredProjectId] = useState<string | null>(null);
 
-  const readyProjects = projects.filter((p) => p.status === 'ready');
+  const visibleProjects = projects.filter((p) => p.status === 'ready' || p.status === 'no-schema');
+
+  async function handleDelete(projectId: string, repo: string, e: React.MouseEvent) {
+    e.stopPropagation(); // don't select the project
+    const res = await window.electronAPI.dialog.confirm({
+      title: 'Remove Tool',
+      message: `Remove ${friendlyName(repo)}? This will delete the project files and Docker image.`,
+      confirmLabel: 'Remove',
+    });
+    if (res.confirmed) onUninstall(projectId);
+  }
 
   return (
     <div
       style={{ ...styles.sidebar, width: hovered ? 200 : 52 }}
       onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onMouseLeave={() => { setHovered(false); setHoveredProjectId(null); }}
     >
       {/* Logo */}
       <div style={styles.logo}>
@@ -63,28 +77,67 @@ export function MiniSidebar({ projects, backgroundInstalls, activeProjectId, onS
         {hovered && <span style={styles.btnLabel}>Add a tool</span>}
       </button>
 
+      <button
+        type="button"
+        style={{
+          ...styles.sidebarBtn,
+          ...(hovered ? styles.sidebarBtnExpanded : {}),
+          ...(isFinderActive ? styles.sidebarBtnActive : {}),
+        }}
+        onClick={onOpenFinder}
+        title="Finder mode"
+      >
+        <span style={styles.btnIcon}>🗂</span>
+        {hovered && <span style={styles.btnLabel}>Finder mode</span>}
+      </button>
+
       <div style={styles.divider} />
 
       {/* Your tools section */}
-      {hovered && readyProjects.length > 0 && (
+      {hovered && visibleProjects.length > 0 && (
         <div style={styles.sectionLabel}>Your tools</div>
       )}
 
-      {readyProjects.map((p) => (
-        <button
+      {visibleProjects.map((p) => (
+        <div
           key={p.projectId}
-          type="button"
-          style={{
-            ...styles.sidebarBtn,
-            ...(hovered ? styles.sidebarBtnExpanded : {}),
-            ...(activeProjectId === p.projectId ? styles.sidebarBtnActive : {}),
-          }}
-          onClick={() => onSelectProject(p.projectId)}
-          title={friendlyName(p.repo)}
+          style={{ position: 'relative' }}
+          onMouseEnter={() => setHoveredProjectId(p.projectId)}
+          onMouseLeave={() => setHoveredProjectId(null)}
         >
-          <span style={styles.btnIcon}>{getToolIcon(p.repo)}</span>
-          {hovered && <span style={styles.btnLabel}>{friendlyName(p.repo)}</span>}
-        </button>
+          <button
+            type="button"
+            style={{
+              ...styles.sidebarBtn,
+              ...(hovered ? styles.sidebarBtnExpanded : {}),
+              ...(activeProjectId === p.projectId ? styles.sidebarBtnActive : {}),
+              // Make room for the delete button when expanded + hovered
+              paddingRight: hovered && hoveredProjectId === p.projectId ? 28 : undefined,
+            }}
+            onClick={() => onSelectProject(p.projectId)}
+            title={friendlyName(p.repo)}
+          >
+            <span style={styles.btnIcon}>{getToolIcon(p.repo)}</span>
+            {hovered && (
+              <span style={styles.btnLabel}>
+                {friendlyName(p.repo)}
+                {p.status === 'no-schema' ? ' · needs UI' : ''}
+              </span>
+            )}
+          </button>
+
+          {/* Delete button — only visible when sidebar is expanded AND this row is hovered */}
+          {hovered && hoveredProjectId === p.projectId && (
+            <button
+              type="button"
+              style={styles.deleteBtn}
+              onClick={(e) => handleDelete(p.projectId, p.repo, e)}
+              title={`Remove ${friendlyName(p.repo)}`}
+            >
+              ×
+            </button>
+          )}
+        </div>
       ))}
 
       {/* Installing tools */}
@@ -160,5 +213,18 @@ const styles: Record<string, React.CSSProperties> = {
   btnLabel: {
     fontSize: 12, fontWeight: 500, color: 'var(--text)',
     whiteSpace: 'nowrap' as const, overflow: 'hidden', textOverflow: 'ellipsis',
+    flex: 1,
+  },
+  deleteBtn: {
+    position: 'absolute' as const,
+    right: 6, top: '50%',
+    transform: 'translateY(-50%)',
+    width: 20, height: 20,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    background: 'transparent', border: 'none',
+    color: 'var(--text-muted)', fontSize: 16, lineHeight: 1,
+    cursor: 'pointer', borderRadius: 4,
+    padding: 0, fontFamily: 'inherit',
+    transition: 'color 0.15s, background 0.15s',
   },
 };

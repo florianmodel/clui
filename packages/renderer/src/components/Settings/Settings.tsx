@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import type { ErrorRecord } from '@gui-bridge/shared';
 
 interface Props {
   onClose?: () => void;
@@ -19,6 +20,28 @@ export function Settings({ onClose, theme = 'dark', onToggleTheme, uiMode = 'sim
   const [validateMsg, setValidateMsg] = useState('');
   const [dockerVersion, setDockerVersion] = useState<string>('Checking…');
 
+  // Error log state
+  const [errorRecords, setErrorRecords] = useState<ErrorRecord[]>([]);
+  const [errorLogPath, setErrorLogPath] = useState<string>('');
+  const [errorLogLoading, setErrorLogLoading] = useState(false);
+  const [errorLogExpanded, setErrorLogExpanded] = useState(false);
+
+  const loadErrorLog = useCallback(async () => {
+    setErrorLogLoading(true);
+    try {
+      const res = await window.electronAPI.errorLog.get();
+      setErrorRecords(res.records.slice(0, 100)); // show latest 100
+      setErrorLogPath(res.logPath);
+    } finally {
+      setErrorLogLoading(false);
+    }
+  }, []);
+
+  const handleClearErrorLog = useCallback(async () => {
+    await window.electronAPI.errorLog.clear();
+    setErrorRecords([]);
+  }, []);
+
   useEffect(() => {
     window.electronAPI.config.get().then((res) => {
       setMockMode(!!res.config.mockMode);
@@ -31,7 +54,10 @@ export function Settings({ onClose, theme = 'dark', onToggleTheme, uiMode = 'sim
     window.electronAPI.docker.checkHealth().then((res) => {
       setDockerVersion(res.ok ? `Docker ${res.version ?? ''}` : 'Not running');
     });
-  }, []);
+
+    // Load error count eagerly so the badge is visible before user clicks "Show"
+    loadErrorLog();
+  }, [loadErrorLog]);
 
   async function handleSaveKey() {
     setSaving(true);
@@ -213,8 +239,91 @@ export function Settings({ onClose, theme = 'dark', onToggleTheme, uiMode = 'sim
           </div>
         </section>
       )}
+
+      {/* Error Log (developer / testing section) */}
+      <section style={styles.section}>
+        <div style={styles.themeRow}>
+          <div>
+            <div style={styles.sectionTitle}>Error Log</div>
+            <div style={styles.sectionDesc}>
+              Local log of failures during testing.{' '}
+              {errorRecords.length > 0 && (
+                <span style={{ color: '#f59e0b', fontWeight: 600 }}>
+                  {errorRecords.length} entr{errorRecords.length === 1 ? 'y' : 'ies'}
+                </span>
+              )}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <button
+              type="button"
+              style={styles.editBtn}
+              onClick={() => setErrorLogExpanded(v => !v)}
+            >
+              {errorLogExpanded ? 'Hide' : 'Show'}
+            </button>
+            {errorRecords.length > 0 && (
+              <button type="button" style={styles.cancelBtn} onClick={handleClearErrorLog}>
+                Clear
+              </button>
+            )}
+            {errorLogPath && (
+              <button
+                type="button"
+                style={styles.editBtn}
+                onClick={() => window.electronAPI.files.showInFinder(errorLogPath)}
+              >
+                Open File
+              </button>
+            )}
+          </div>
+        </div>
+
+        {errorLogExpanded && (
+          <div style={styles.errorLogBody}>
+            {errorLogLoading && (
+              <div style={styles.errorLogEmpty}>Loading…</div>
+            )}
+            {!errorLogLoading && errorRecords.length === 0 && (
+              <div style={styles.errorLogEmpty}>No errors logged yet.</div>
+            )}
+            {!errorLogLoading && errorRecords.map((r) => (
+              <div key={r.id} style={styles.errorLogEntry}>
+                <div style={styles.errorLogEntryHeader}>
+                  <span style={{ ...styles.errorLogBadge, ...categoryBadgeStyle(r.category) }}>
+                    {r.category}
+                  </span>
+                  <span style={styles.errorLogTime}>
+                    {new Date(r.timestamp).toLocaleString()}
+                  </span>
+                  {r.projectId && (
+                    <span style={styles.errorLogProject}>{r.projectId}</span>
+                  )}
+                </div>
+                <div style={styles.errorLogMessage}>{r.message}</div>
+                {r.detail && (
+                  <pre style={styles.errorLogDetail}>{r.detail}</pre>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
+}
+
+function categoryBadgeStyle(category: string): React.CSSProperties {
+  if (category.includes('failure') || category.includes('error') || category.includes('fail')) {
+    return { background: 'rgba(239,68,68,0.15)', color: '#f87171' };
+  }
+  if (category.includes('warning')) {
+    return { background: 'rgba(251,191,36,0.15)', color: '#f59e0b' };
+  }
+  if (category.includes('ok') || category.includes('applied')) {
+    return { background: 'rgba(34,197,94,0.15)', color: '#4ade80' };
+  }
+  return { background: 'var(--surface-2)', color: 'var(--text-muted)' };
 }
 
 const styles: Record<string, React.CSSProperties> = {
@@ -285,4 +394,42 @@ const styles: Record<string, React.CSSProperties> = {
   dirPath: { fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text)', flex: 1 },
   dockerStatus: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text)' },
   dockerDot: { width: 8, height: 8, borderRadius: '50%', flexShrink: 0 },
+
+  // Error log styles
+  errorLogBody: {
+    display: 'flex', flexDirection: 'column', gap: 6,
+    maxHeight: 320, overflowY: 'auto',
+    marginTop: 4,
+  },
+  errorLogEmpty: {
+    fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic', padding: '4px 0',
+  },
+  errorLogEntry: {
+    background: 'var(--surface-2)', borderRadius: 6, padding: '8px 10px',
+    display: 'flex', flexDirection: 'column', gap: 3,
+  },
+  errorLogEntryHeader: {
+    display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' as const,
+  },
+  errorLogBadge: {
+    fontSize: 10, fontWeight: 700, padding: '2px 6px',
+    borderRadius: 4, letterSpacing: '0.04em',
+  },
+  errorLogTime: {
+    fontSize: 10, color: 'var(--text-muted)',
+  },
+  errorLogProject: {
+    fontSize: 10, color: 'var(--text-muted)',
+    fontFamily: 'var(--font-mono)',
+  },
+  errorLogMessage: {
+    fontSize: 12, color: 'var(--text)', lineHeight: 1.4,
+  },
+  errorLogDetail: {
+    fontSize: 10, color: 'var(--text-muted)',
+    fontFamily: 'var(--font-mono)', lineHeight: 1.4,
+    margin: 0, whiteSpace: 'pre-wrap' as const, wordBreak: 'break-all' as const,
+    maxHeight: 80, overflow: 'hidden',
+    background: 'var(--surface)', borderRadius: 4, padding: '4px 6px',
+  },
 };

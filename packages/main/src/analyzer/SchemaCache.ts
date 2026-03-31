@@ -30,6 +30,17 @@ export class SchemaCache {
     );
   }
 
+  /** Load a cached CapabilityDump, or null if not found. */
+  getDump(cacheKey: string): CapabilityDump | null {
+    const dumpPath = path.join(this.baseDir, cacheKey, 'capability-dump.json');
+    try {
+      const content = fs.readFileSync(dumpPath, 'utf8');
+      return JSON.parse(content) as CapabilityDump;
+    } catch {
+      return null;
+    }
+  }
+
   saveDump(cacheKey: string, dump: CapabilityDump): void {
     const projectDir = path.join(this.baseDir, cacheKey);
     fs.mkdirSync(projectDir, { recursive: true });

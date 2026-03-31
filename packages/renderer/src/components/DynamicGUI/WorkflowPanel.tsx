@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import type { Workflow, UISchema, ExecCompleteEvent, ExecLogEvent } from '@gui-bridge/shared';
+import { buildCommand, describeExecution } from '@gui-bridge/shared';
 import { useLogEvents, useCompleteEvent } from '../../hooks/useIPC.js';
 import { StepRenderer } from './StepRenderer.js';
 import { CommandPreview } from './CommandPreview.js';
@@ -16,30 +17,12 @@ interface Props {
 
 type RunStatus = 'idle' | 'running' | 'done' | 'error';
 type FixStatus = 'idle' | 'thinking' | 'ready' | 'rerunning' | 'save-prompt';
-
-/** Build command preview in the renderer (no Node.js — uses own basename). */
-function buildPreview(workflow: Workflow, inputs: Record<string, unknown>): string {
-  let cmd = workflow.execute.command;
-  for (const [stepId, value] of Object.entries(inputs)) {
-    if (value === null || value === undefined || value === '') continue;
-    const step = workflow.steps.find((s) => s.id === stepId);
-    if (step?.type === 'file_input') {
-      const v = Array.isArray(value) ? value[0] : value;
-      const filename = String(v).split('/').pop() ?? String(v);
-      cmd = cmd.replaceAll(`{${stepId}}`, filename);
-    } else if (step?.type === 'checkbox' || step?.type === 'toggle') {
-      cmd = cmd.replaceAll(`{${stepId}}`, value ? 'true' : 'false');
-    } else {
-      cmd = cmd.replaceAll(`{${stepId}}`, String(value));
-    }
-  }
-  return cmd;
-}
+type FixedExecute = Pick<Workflow['execute'], 'executable' | 'args' | 'shellScript'>;
 
 /** Initialize form values from schema defaults. */
 function initValues(workflow: Workflow): Record<string, unknown> {
   const values: Record<string, unknown> = {};
-  for (const step of workflow.steps) {
+  for (const step of (workflow.steps ?? [])) {
     if (step.default !== undefined) {
       values[step.id] = step.default;
     }
@@ -72,9 +55,13 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId,
 
   // Auto-fix state
   const [fixStatus, setFixStatus] = useState<FixStatus>('idle');
-  const [fixedTemplate, setFixedTemplate] = useState<string | null>(null);
+  const [fixedExecute, setFixedExecute] = useState<FixedExecute | null>(null);
   const [fixExplanation, setFixExplanation] = useState<string | null>(null);
+  const [fixDiagnosis, setFixDiagnosis] = useState<{ errorClass: string; shortReason: string } | null>(null);
+  const [fixAttempts, setFixAttempts] = useState(0);
   const [failedCommand, setFailedCommand] = useState<string>('');
+  const activeRunIdRef = useRef<string | null>(null);
+  const batchRunningRef = useRef(false);
 
   // Keep a ref in sync so the complete-event callback can read fixStatus without a stale closure
   const fixStatusRef = useRef<FixStatus>('idle');
@@ -122,10 +109,14 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId,
     setRunStatus('idle');
     setOutputFiles([]);
     setFixStatus('idle');
-    setFixedTemplate(null);
+    setFixedExecute(null);
     setFixExplanation(null);
+    setFixDiagnosis(null);
+    setFixAttempts(0);
     setFailedCommand('');
     errorOutputRef.current = '';
+    activeRunIdRef.current = null;
+    batchRunningRef.current = false;
     setBatchMode(false);
     setBatchFiles([]);
     setBatchProgress(null);
@@ -134,22 +125,26 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId,
     setShowAdvanced(false);
   }, [workflow.id]);
 
-  // Capture stderr/system lines for the auto-fix request
-  useEffect(() => {
-    return window.electronAPI.on.log((event) => {
-      if (event.stream === 'stderr' || event.stream === 'system') {
-        errorOutputRef.current += event.line + '\n';
-      }
-    });
-  }, []);
-
   // Forward streamed logs to App.tsx
-  useLogEvents(onLog);
+  useLogEvents(useCallback((event) => {
+    if (!activeRunIdRef.current || event.runId !== activeRunIdRef.current) return;
+    if (event.stream === 'stderr' || event.stream === 'system') {
+      errorOutputRef.current += event.line + '\n';
+    }
+    onLog(event);
+  }, [onLog]));
 
   // Handle execution complete
   useCompleteEvent(
     useCallback(
       (event: ExecCompleteEvent) => {
+        if (!activeRunIdRef.current || event.runId !== activeRunIdRef.current) return;
+        activeRunIdRef.current = null;
+
+        if (batchRunningRef.current) {
+          return;
+        }
+
         if (event.exitCode === 0) {
           setOutputFiles(event.outputFiles);
           setRunStatus('done');
@@ -158,17 +153,20 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId,
             setFixStatus('save-prompt');
           }
           onLog({
+            runId: event.runId,
             stream: 'system',
             line: currentWorkflow.execute.successMessage ?? `Done! Output: ${event.outputFiles.join(', ') || '(none)'}`,
             timestamp: Date.now(),
           });
         } else {
           setRunStatus('error');
-          // If the fix attempt also failed, reset fix state so user can try again
+          // If the fix attempt also failed, increment counter so next attempt gets more context
           if (fixStatusRef.current === 'rerunning') {
+            setFixAttempts((n) => n + 1);
             setFixStatus('idle');
           }
           onLog({
+            runId: event.runId,
             stream: 'system',
             line: `Process exited with code ${event.exitCode}. ${event.error ?? ''}`,
             timestamp: Date.now(),
@@ -180,6 +178,51 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId,
     ),
   );
 
+  const emitSystemLog = useCallback((line: string, runId?: string) => {
+    onLog({
+      runId: runId ?? activeRunIdRef.current ?? `ui:${currentWorkflow.id}`,
+      stream: 'system',
+      line,
+      timestamp: Date.now(),
+    });
+  }, [currentWorkflow.id, onLog]);
+
+  const buildUpdatedWorkflow = useCallback((execute: FixedExecute): Workflow => {
+    if (execute.shellScript?.trim()) {
+      return {
+        ...currentWorkflow,
+        execute: {
+          ...currentWorkflow.execute,
+          shellScript: execute.shellScript.trim(),
+          executable: undefined,
+          args: undefined,
+          command: undefined,
+        },
+      };
+    }
+
+    return {
+      ...currentWorkflow,
+      execute: {
+        ...currentWorkflow.execute,
+        executable: execute.executable?.trim(),
+        args: execute.args ?? [],
+        shellScript: undefined,
+        command: undefined,
+      },
+    };
+  }, [currentWorkflow]);
+
+  function waitForRunCompletion(runIdRef: { current: string | null }): Promise<ExecCompleteEvent> {
+    return new Promise((resolve) => {
+      const cleanup = window.electronAPI.on.complete((event) => {
+        if (!runIdRef.current || event.runId !== runIdRef.current) return;
+        cleanup();
+        resolve(event);
+      });
+    });
+  }
+
   function handleChange(stepId: string, value: unknown) {
     setValues((prev) => ({ ...prev, [stepId]: value }));
     if (errors[stepId]) {
@@ -190,7 +233,7 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId,
   function validate(wf: Workflow = currentWorkflow): boolean {
     const newErrors: Record<string, string> = {};
 
-    for (const step of wf.steps) {
+    for (const step of (wf.steps ?? [])) {
       if (step.showIf) {
         const { stepId, equals } = step.showIf;
         if (values[stepId] !== equals) continue;
@@ -215,7 +258,7 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId,
   }
 
   // Batch mode helpers
-  const batchFileStep = currentWorkflow.steps.find((s) => s.type === 'file_input' && !s.multiple);
+  const batchFileStep = (currentWorkflow.steps ?? []).find((s) => s.type === 'file_input' && !s.multiple);
   const batchEligible = !!batchFileStep;
 
   async function handleAddBatchFiles() {
@@ -237,36 +280,50 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId,
     setRunStatus('running');
     setBatchProgress({ current: 0, total: batchFiles.length });
     errorOutputRef.current = '';
+    batchRunningRef.current = true;
 
     const allOutputFiles: string[] = [];
-    for (let i = 0; i < batchFiles.length; i++) {
-      const file = batchFiles[i];
-      const filename = file.split('/').pop() ?? file;
-      onLog({ stream: 'system', line: `--- File ${i + 1}/${batchFiles.length}: ${filename} ---`, timestamp: Date.now() });
+    let hadFailures = false;
+    try {
+      for (let i = 0; i < batchFiles.length; i++) {
+        const file = batchFiles[i];
+        const filename = file.split('/').pop() ?? file;
+        const pendingRunId = { current: null as string | null };
+        const completion = waitForRunCompletion(pendingRunId);
 
-      const completePromise = new Promise<ExecCompleteEvent>((resolve) => {
-        const cleanup = window.electronAPI.on.complete((event) => { cleanup(); resolve(event); });
-      });
+        const response = await window.electronAPI.exec.schemaRun({
+          workflow: currentWorkflow,
+          dockerImage: schema.dockerImage,
+          dockerfilePath: schema.dockerfilePath,
+          inputs: { ...values, [batchFileStep.id]: file },
+          outputDir,
+          projectId,
+        });
+        if (!response.ok || !response.runId) {
+          hadFailures = true;
+          emitSystemLog(`Failed to start: ${response.error ?? 'unknown'}`);
+          continue;
+        }
 
-      const response = await window.electronAPI.exec.schemaRun({
-        workflow: currentWorkflow,
-        dockerImage: schema.dockerImage,
-        dockerfilePath: schema.dockerfilePath,
-        inputs: { ...values, [batchFileStep.id]: file },
-        outputDir,
-        projectId,
-      });
-      if (!response.ok) {
-        onLog({ stream: 'system', line: `Failed to start: ${response.error ?? 'unknown'}`, timestamp: Date.now() });
-        continue;
+        pendingRunId.current = response.runId;
+        activeRunIdRef.current = response.runId;
+        emitSystemLog(`--- File ${i + 1}/${batchFiles.length}: ${filename} ---`, response.runId);
+
+        const result = await completion;
+        if (result.exitCode === 0) {
+          allOutputFiles.push(...result.outputFiles);
+        } else {
+          hadFailures = true;
+          emitSystemLog(`Process exited with code ${result.exitCode}. ${result.error ?? ''}`, response.runId);
+        }
+        setBatchProgress({ current: i + 1, total: batchFiles.length });
       }
-      const result = await completePromise;
-      allOutputFiles.push(...result.outputFiles);
-      setBatchProgress({ current: i + 1, total: batchFiles.length });
+    } finally {
+      batchRunningRef.current = false;
     }
 
     setOutputFiles(allOutputFiles);
-    setRunStatus('done');
+    setRunStatus(hadFailures ? 'error' : 'done');
     setBatchProgress(null);
     onRunComplete?.();
   }
@@ -325,7 +382,7 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId,
     // Reset error capture buffer for this new run
     errorOutputRef.current = '';
     // Capture command for potential auto-fix request
-    setFailedCommand(buildPreview(wf, values));
+    setFailedCommand(buildCommand(wf, values));
 
     const response = await window.electronAPI.exec.schemaRun({
       workflow: wf,
@@ -336,9 +393,14 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId,
       projectId,
     });
 
-    if (!response.ok && runStatus !== 'error') {
+    if (!response.ok || !response.runId) {
+      activeRunIdRef.current = null;
       setRunStatus('error');
+      emitSystemLog(`Failed to start: ${response.error ?? 'unknown'}`);
+      return;
     }
+
+    activeRunIdRef.current = response.runId;
   }
 
   async function handleAutofix() {
@@ -347,31 +409,27 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId,
     const res = await window.electronAPI.exec.autofix({
       workflow: currentWorkflow,
       failedCommand,
-      errorOutput: errorOutputRef.current.slice(-1500),
+      // Accumulate error context across retries — don't slice, keep growing
+      errorOutput: errorOutputRef.current,
+      inputValues: values,
     });
 
-    if (!res.ok || !res.template || !res.explanation) {
+    if (!res.ok || !res.execute || !res.explanation) {
       setFixStatus('idle');
-      onLog({
-        stream: 'system',
-        line: `Auto-fix failed: ${res.error ?? 'No suggestion returned.'}`,
-        timestamp: Date.now(),
-      });
+      emitSystemLog(`Auto-fix failed: ${res.error ?? 'No suggestion returned.'}`);
       return;
     }
 
-    setFixedTemplate(res.template);
+    setFixedExecute(res.execute);
     setFixExplanation(res.explanation);
+    setFixDiagnosis(res.diagnosis ?? null);
     setFixStatus('ready');
   }
 
   async function handleAcceptFix() {
-    if (!fixedTemplate) return;
+    if (!fixedExecute) return;
 
-    const updatedWorkflow: Workflow = {
-      ...currentWorkflow,
-      execute: { ...currentWorkflow.execute, command: fixedTemplate },
-    };
+    const updatedWorkflow = buildUpdatedWorkflow(fixedExecute);
     setCurrentWorkflow(updatedWorkflow);
     setFixStatus('rerunning');
     await handleRun(updatedWorkflow);
@@ -379,8 +437,9 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId,
 
   function handleDismissFix() {
     setFixStatus('idle');
-    setFixedTemplate(null);
+    setFixedExecute(null);
     setFixExplanation(null);
+    setFixDiagnosis(null);
   }
 
   async function handleSaveFix() {
@@ -395,18 +454,18 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId,
     const res = await window.electronAPI.schema.save({ schema: updatedSchema });
 
     if (res.ok && res.saved) {
-      onLog({ stream: 'system', line: 'Fix saved to schema cache.', timestamp: Date.now() });
+      emitSystemLog('Fix saved to schema cache.');
     } else if (res.ok && !res.saved) {
-      onLog({ stream: 'system', line: 'Fix applied in memory (schema is not cached — no file to update).', timestamp: Date.now() });
+      emitSystemLog('Fix applied in memory (schema is not cached — no file to update).');
     } else {
-      onLog({ stream: 'system', line: `Could not save fix: ${res.error ?? 'unknown error'}`, timestamp: Date.now() });
+      emitSystemLog(`Could not save fix: ${res.error ?? 'unknown error'}`);
     }
 
     setFixStatus('idle');
   }
 
   const busy = runStatus === 'running' || fixStatus === 'thinking' || fixStatus === 'rerunning';
-  const commandPreview = buildPreview(currentWorkflow, values);
+  const commandPreview = buildCommand(currentWorkflow, values);
 
   const hasAdvancedSteps = currentWorkflow.steps.some((s) => s.advanced);
 
@@ -597,15 +656,24 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId,
 
       {/* Auto-fix button — shown after an error, when not already fixing */}
       {runStatus === 'error' && fixStatus === 'idle' && (
-        <button type="button" style={styles.autofixBtn} onClick={handleAutofix}>
-          🔧 Auto-fix with AI
-        </button>
+        fixAttempts < 3 ? (
+          <button type="button" style={styles.autofixBtn} onClick={handleAutofix}>
+            🔧 {fixAttempts === 0 ? 'Auto-fix with AI' : `Auto-fix with AI (attempt ${fixAttempts + 1})`}
+          </button>
+        ) : (
+          <div style={styles.fixGaveUp}>
+            Auto-fix could not resolve this after {fixAttempts} attempts. Try regenerating the UI or adjusting your inputs.
+          </div>
+        )
       )}
 
       {/* Fix suggestion card */}
-      {fixStatus === 'ready' && fixedTemplate && (
+      {fixStatus === 'ready' && fixedExecute && (
         <div style={styles.fixCard}>
           <div style={styles.fixTitle}>Suggested fix</div>
+          {fixDiagnosis && (
+            <div style={styles.fixDiagnosis}>Diagnosed: {fixDiagnosis.shortReason}</div>
+          )}
           {fixExplanation && (
             <div style={styles.fixExplanation}>&ldquo;{fixExplanation}&rdquo;</div>
           )}
@@ -613,13 +681,13 @@ export function WorkflowPanel({ workflow, schema, onLog, onClearLogs, projectId,
             <div style={styles.fixDiffRow}>
               <span style={styles.fixLabel}>Before</span>
               <code style={{ ...styles.fixCode, color: 'var(--red)' }}>
-                {currentWorkflow.execute.command}
+                {describeExecution(currentWorkflow)}
               </code>
             </div>
             <div style={styles.fixDiffRow}>
               <span style={styles.fixLabel}>After</span>
               <code style={{ ...styles.fixCode, color: 'var(--green)' }}>
-                {fixedTemplate}
+                {describeExecution(buildUpdatedWorkflow(fixedExecute))}
               </code>
             </div>
           </div>
@@ -729,6 +797,12 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text)', fontWeight: 600, fontSize: 14,
     padding: '10px 20px', cursor: 'pointer', textAlign: 'center',
   },
+  fixGaveUp: {
+    padding: '10px 14px', borderRadius: 10,
+    border: '1px solid var(--border)',
+    background: 'var(--surface-2)',
+    fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5,
+  },
   // Fix card
   fixCard: {
     display: 'flex', flexDirection: 'column', gap: 12,
@@ -738,6 +812,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 10,
   },
   fixTitle: { fontSize: 13, fontWeight: 700, color: 'var(--text)' },
+  fixDiagnosis: { fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' },
   fixExplanation: { fontSize: 13, color: 'var(--text)', fontStyle: 'italic' },
   fixDiff: { display: 'flex', flexDirection: 'column', gap: 8 },
   fixDiffRow: { display: 'flex', alignItems: 'baseline', gap: 10 },

@@ -1,8 +1,18 @@
 import { ipcMain, BrowserWindow, shell, dialog, app, clipboard, Notification } from 'electron';
+import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
   IPCChannel,
+  type ErrorLogGetResponse,
+  type FolderScanRequest,
+  type FolderScanResponse,
+  type FolderListRecentsResponse,
+  type FolderRunRequest,
+  type FolderRunResponse,
+  type FolderRunLogEvent,
+  type FolderRunCompleteEvent,
+  type FolderRunUrlEvent,
   type DockerBuildRequest,
   type DockerBuildResponse,
   type DockerHealthResponse,
@@ -59,14 +69,26 @@ import {
   type FileGetInfoResponse,
   type FileInfo,
   type FileType,
+  type FileScanRequest,
+  type FileScanResponse,
+  type FileListRecentsResponse,
+  type FileApplyChangesRequest,
+  type FileApplyChangesResponse,
   type AppConfirmRequest,
   type AppConfirmResponse,
   type AppNotifyRequest,
   type InstallProgressEvent,
+  type Workflow,
 } from '@gui-bridge/shared';
 
 import { DockerManager } from '../docker/index.js';
-import { buildCommand, collectInputFiles, ExecutorRouter, DockerExecutor } from '../executor/index.js';
+import {
+  buildCommand,
+  describeExecution,
+  resolveExecution,
+  ExecutorRouter,
+  DockerExecutor,
+} from '../executor/index.js';
 import { Analyzer } from '../analyzer/index.js';
 import { LLMClient, MockLLMClient, type ILLMClient } from '../analyzer/LLMClient.js';
 import { OpenAIClient } from '../analyzer/OpenAIClient.js';
@@ -76,12 +98,23 @@ import { ConfigManager } from '../config/ConfigManager.js';
 import { NativeInstallManager } from '../native/index.js';
 import { getScriptsDir, getProjectsDir } from '../paths.js';
 import { buildFixCommandPrompt } from '../analyzer/prompts/fix-command.js';
+import { buildDiagnosePrompt } from '../analyzer/prompts/diagnose-error.js';
 import { buildAddWorkflowPrompt } from '../analyzer/prompts/add-workflow.js';
+import { TOKEN_LIMITS } from '../analyzer/models.js';
 import { buildRepoRecommendationPrompt } from '../analyzer/prompts/recommend-repos.js';
 import { buildFormFillPrompt } from '../analyzer/prompts/fill-form.js';
+import { SchemaValidator } from '../analyzer/SchemaValidator.js';
 import { GitHubClient } from '../github/GitHubClient.js';
 import { ProjectManager } from '../projects/ProjectManager.js';
 import { HistoryStore } from '../projects/HistoryStore.js';
+import {
+  FileContextService,
+  FolderActionRunner,
+  FolderContextService,
+  RecentFilesStore,
+  RecentFoldersStore,
+} from '../finder/index.js';
+import { errorLogger } from '../ErrorLogger.js';
 
 /** Instantiate the correct LLM client based on config. Returns MockLLMClient if no key. */
 function makeLLMClient(config: AppConfig): ILLMClient {
@@ -98,8 +131,11 @@ const docker = new DockerManager();
 const executorRouter = new ExecutorRouter(docker);
 const configManager = new ConfigManager();
 const schemaCache = new SchemaCache();
+const schemaValidator = new SchemaValidator();
 const githubClient = new GitHubClient();
 const historyStore = new HistoryStore();
+const recentFoldersStore = new RecentFoldersStore();
+const recentFilesStore = new RecentFilesStore();
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -125,6 +161,42 @@ function resolveAppPath(p: string): string {
   return path.resolve(app.getAppPath(), p);
 }
 
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function validateSchemaWarnings(schema: { projectId: string; projectName: string; description: string; version: string; dockerImage: string; workflows: Workflow[] }): string[] {
+  const cloned = cloneJson(schema);
+  return schemaValidator.validate(cloned);
+}
+
+function buildUpdatedExecute(
+  base: Workflow['execute'],
+  execute: NonNullable<ExecAutofixResponse['execute']>,
+): Workflow['execute'] {
+  if (execute.shellScript?.trim()) {
+    return {
+      ...base,
+      shellScript: execute.shellScript.trim(),
+      executable: undefined,
+      args: undefined,
+      command: undefined,
+    };
+  }
+
+  if (execute.executable?.trim()) {
+    return {
+      ...base,
+      executable: execute.executable.trim(),
+      args: execute.args ?? [],
+      shellScript: undefined,
+      command: undefined,
+    };
+  }
+
+  throw new Error('Auto-fix response did not include a valid execution config');
+}
+
 /** Fire a system notification if the platform supports it. */
 function notify(title: string, body: string): void {
   if (Notification.isSupported()) {
@@ -136,9 +208,20 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
   const scriptsDir = getScriptsDir();
   const projectManager = new ProjectManager(docker, scriptsDir);
+  const folderContextService = new FolderContextService({
+    recentStore: recentFoldersStore,
+    listInstalledProjects: () => projectManager.listInstalled(),
+  });
+  const fileContextService = new FileContextService({
+    recentStore: recentFilesStore,
+    listInstalledProjects: () => projectManager.listInstalled(),
+  });
 
   // Track the currently running executor so exec:cancel works regardless of mode
   let activeExecutor: import('../executor/IExecutor.js').IExecutor | null = null;
+  let activeRunId: string | null = null;
+  let activeFolderRunner: FolderActionRunner | null = null;
+  let activeFolderRunId: string | null = null;
 
   // ── app:getPath ────────────────────────────────────────────────────────
   ipcMain.handle(IPCChannel.APP_GET_PATH, (_event, name: string): string => {
@@ -160,11 +243,13 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle(
     IPCChannel.DOCKER_BUILD,
     async (_event, req: DockerBuildRequest): Promise<DockerBuildResponse> => {
+      const runId = `build:${req.tag}`;
       // Check if image already exists — skip build if so
       const exists = await docker.imageExists(req.tag);
       if (exists) {
         const win = getWindow();
         const event: ExecLogEvent = {
+          runId,
           stream: 'system',
           line: `Image "${req.tag}" already exists — skipping build.`,
           timestamp: Date.now(),
@@ -182,7 +267,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         dockerfilePath,
         contextPath,
         (stream, line) => {
-          const event: ExecLogEvent = { stream, line, timestamp: Date.now() };
+          const event: ExecLogEvent = { runId, stream, line, timestamp: Date.now() };
           win?.webContents.send(IPCChannel.EXEC_LOG, event);
         },
       );
@@ -197,6 +282,14 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     IPCChannel.EXEC_RUN,
     async (_event, req: ExecRunRequest): Promise<ExecRunResponse> => {
       const win = getWindow();
+      if (activeExecutor) {
+        return {
+          ok: false,
+          error: `A run is already in progress${activeRunId ? ` (${activeRunId})` : ''}.`,
+        };
+      }
+
+      const runId = randomUUID();
 
       // Create temp output dir
       const outputDir = req.outputDir ?? docker.createTempDir('output');
@@ -217,36 +310,44 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       // else: no input dir — command generates its own input (e.g. lavfi test source)
 
       const sendLog = (stream: 'stdout' | 'stderr' | 'system', line: string) => {
-        const event: ExecLogEvent = { stream, line, timestamp: Date.now() };
+        const event: ExecLogEvent = { runId, stream, line, timestamp: Date.now() };
         win?.webContents.send(IPCChannel.EXEC_LOG, event);
       };
 
-      try {
-        const result = await docker.runCommand(
-          req.image,
-          req.command,
-          { inputDir, outputDir, env: req.env },
-          sendLog,
-        );
+      const executor = new DockerExecutor(docker, req.image);
+      activeExecutor = executor;
+      activeRunId = runId;
 
-        const complete: ExecCompleteEvent = {
-          exitCode: result.exitCode,
-          outputFiles: result.outputFiles,
-          error: result.error,
-        };
-        win?.webContents.send(IPCChannel.EXEC_COMPLETE, complete);
+      void (async () => {
+        try {
+          const result = await docker.runCommand(
+            req.image,
+            req.command,
+            { inputDir, outputDir, env: req.env },
+            sendLog,
+          );
 
-        return { ok: true };
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        sendLog('system', `Error: ${msg}`);
-        const complete: ExecCompleteEvent = { exitCode: -1, outputFiles: [], error: msg };
-        win?.webContents.send(IPCChannel.EXEC_COMPLETE, complete);
-        return { ok: false, error: msg };
-      } finally {
-        if (ownedInput && inputDir) docker.removeTempDir(inputDir);
-        // outputDir is intentionally kept so the renderer can open files
-      }
+          const complete: ExecCompleteEvent = {
+            runId,
+            exitCode: result.exitCode,
+            outputFiles: result.outputFiles,
+            error: result.error,
+          };
+          win?.webContents.send(IPCChannel.EXEC_COMPLETE, complete);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          sendLog('system', `Error: ${msg}`);
+          const complete: ExecCompleteEvent = { runId, exitCode: -1, outputFiles: [], error: msg };
+          win?.webContents.send(IPCChannel.EXEC_COMPLETE, complete);
+        } finally {
+          if (ownedInput && inputDir) docker.removeTempDir(inputDir);
+          activeExecutor = null;
+          activeRunId = null;
+          // outputDir is intentionally kept so the renderer can open files
+        }
+      })();
+
+      return { ok: true, runId };
     },
   );
 
@@ -325,9 +426,16 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     async (_event, req: ExecSchemaRunRequest): Promise<ExecRunResponse> => {
       const win = getWindow();
       const startedAt = Date.now();
+      if (activeExecutor) {
+        return {
+          ok: false,
+          error: `A run is already in progress${activeRunId ? ` (${activeRunId})` : ''}.`,
+        };
+      }
+      const runId = randomUUID();
 
       const sendLog = (stream: 'stdout' | 'stderr' | 'system', line: string) => {
-        const event: ExecLogEvent = { stream, line, timestamp: Date.now() };
+        const event: ExecLogEvent = { runId, stream, line, timestamp: Date.now() };
         win?.webContents.send(IPCChannel.EXEC_LOG, event);
       };
 
@@ -343,90 +451,109 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       }
 
       activeExecutor = executor;
+      activeRunId = runId;
       sendLog('system', `Executor: ${executor.name}`);
 
-      // For Docker executor: build image if needed (native skips this)
-      if (executor.name === 'Docker' && req.dockerfilePath) {
-        const exists = await docker.imageExists(req.dockerImage);
-        if (!exists) {
-          const dockerfilePath = resolveAppPath(req.dockerfilePath);
-          const contextPath = resolveAppPath('.');
-          const buildResult = await docker.buildImage(req.dockerImage, dockerfilePath, contextPath, sendLog);
-          if (!buildResult.ok) {
-            const complete: ExecCompleteEvent = { exitCode: 1, outputFiles: [], error: buildResult.error };
-            win?.webContents.send(IPCChannel.EXEC_COMPLETE, complete);
-            return { ok: false, error: buildResult.error };
-          }
-        } else {
-          sendLog('system', `Image "${req.dockerImage}" already exists — skipping build.`);
-        }
-      }
-
-      // Build command from template + inputs
-      const builtCommand = buildCommand(req.workflow, req.inputs);
+      const resolvedExecution = resolveExecution(req.workflow, req.inputs);
+      const builtCommand = resolvedExecution.preview || buildCommand(req.workflow, req.inputs) || describeExecution(req.workflow);
       sendLog('system', `Command: ${builtCommand}`);
 
-      const inputFilePaths = collectInputFiles(req.workflow, req.inputs);
+      void (async () => {
+        try {
+          // For Docker executor: build image if needed (native skips this)
+          if (executor.name === 'Docker' && req.dockerfilePath) {
+            const exists = await docker.imageExists(req.dockerImage);
+            if (!exists) {
+              const dockerfilePath = resolveAppPath(req.dockerfilePath);
+              const contextPath = resolveAppPath('.');
+              const buildResult = await docker.buildImage(req.dockerImage, dockerfilePath, contextPath, sendLog);
+              if (!buildResult.ok) {
+                const complete: ExecCompleteEvent = {
+                  runId,
+                  exitCode: 1,
+                  outputFiles: [],
+                  error: buildResult.error,
+                };
+                win?.webContents.send(IPCChannel.EXEC_COMPLETE, complete);
+                return;
+              }
+            } else {
+              sendLog('system', `Image "${req.dockerImage}" already exists — skipping build.`);
+            }
+          }
 
-      try {
-        const result = await executor.run(
-          builtCommand,
-          { inputFiles: inputFilePaths, outputDir: req.outputDir },
-          sendLog,
-        );
+          const result = await executor.run(
+            resolvedExecution,
+            { inputBindings: resolvedExecution.inputBindings, outputDir: req.outputDir },
+            sendLog,
+          );
 
-        const complete: ExecCompleteEvent = {
-          exitCode: result.exitCode,
-          outputFiles: result.outputFiles,
-          error: result.error,
-        };
-        win?.webContents.send(IPCChannel.EXEC_COMPLETE, complete);
-
-        if (result.exitCode === 0) {
-          notify(`${req.workflow.name} complete`, `Finished successfully — ${result.outputFiles.length} output file(s).`);
-        } else {
-          notify(`${req.workflow.name} failed`, `Exited with code ${result.exitCode}.`);
-        }
-
-        if (req.projectId) {
-          historyStore.append(req.projectId, {
-            id: String(Date.now()),
-            workflowId: req.workflow.id,
-            workflowName: req.workflow.name,
-            startedAt: new Date().toISOString(),
-            durationMs: Date.now() - startedAt,
-            success: result.exitCode === 0,
+          const complete: ExecCompleteEvent = {
+            runId,
             exitCode: result.exitCode,
             outputFiles: result.outputFiles,
-          });
-        }
+            error: result.error,
+          };
+          win?.webContents.send(IPCChannel.EXEC_COMPLETE, complete);
 
-        return { ok: true };
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        sendLog('system', `Error: ${msg}`);
-        const complete: ExecCompleteEvent = { exitCode: -1, outputFiles: [], error: msg };
-        win?.webContents.send(IPCChannel.EXEC_COMPLETE, complete);
-        notify(`${req.workflow.name} failed`, msg.slice(0, 100));
+          if (result.exitCode === 0) {
+            notify(`${req.workflow.name} complete`, `Finished successfully — ${result.outputFiles.length} output file(s).`);
+          } else {
+            notify(`${req.workflow.name} failed`, `Exited with code ${result.exitCode}.`);
+            errorLogger.logRunFailure({
+              projectId: req.projectId,
+              workflowId: req.workflow.id,
+              workflowName: req.workflow.name,
+              exitCode: result.exitCode,
+              command: builtCommand,
+              stderrTail: result.error,
+            });
+          }
 
-        if (req.projectId) {
-          historyStore.append(req.projectId, {
-            id: String(Date.now()),
+          if (req.projectId) {
+            historyStore.append(req.projectId, {
+              id: runId,
+              workflowId: req.workflow.id,
+              workflowName: req.workflow.name,
+              startedAt: new Date(startedAt).toISOString(),
+              durationMs: Date.now() - startedAt,
+              success: result.exitCode === 0,
+              exitCode: result.exitCode,
+              outputFiles: result.outputFiles,
+            });
+          }
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          sendLog('system', `Error: ${msg}`);
+          const complete: ExecCompleteEvent = { runId, exitCode: -1, outputFiles: [], error: msg };
+          win?.webContents.send(IPCChannel.EXEC_COMPLETE, complete);
+          notify(`${req.workflow.name} failed`, msg.slice(0, 100));
+          errorLogger.logRunCrash({
+            projectId: req.projectId,
             workflowId: req.workflow.id,
-            workflowName: req.workflow.name,
-            startedAt: new Date().toISOString(),
-            durationMs: Date.now() - startedAt,
-            success: false,
-            exitCode: -1,
-            outputFiles: [],
             error: msg,
           });
-        }
 
-        return { ok: false, error: msg };
-      } finally {
-        activeExecutor = null;
-      }
+          if (req.projectId) {
+            historyStore.append(req.projectId, {
+              id: runId,
+              workflowId: req.workflow.id,
+              workflowName: req.workflow.name,
+              startedAt: new Date(startedAt).toISOString(),
+              durationMs: Date.now() - startedAt,
+              success: false,
+              exitCode: -1,
+              outputFiles: [],
+              error: msg,
+            });
+          }
+        } finally {
+          activeExecutor = null;
+          activeRunId = null;
+        }
+      })();
+
+      return { ok: true, runId };
     },
   );
 
@@ -490,6 +617,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         const analyzer = new Analyzer(docker, scriptsDir);
 
         let schema;
+        let warnings: string[] = [];
 
         if (req.currentSchema && req.feedback) {
           // Refinement with feedback
@@ -500,29 +628,42 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
             llmClient,
             sendProgress,
             req.feedback,
+            req.dump.stack.analyzerCommand,
           );
         } else {
           // Fresh generation
-          schema = await analyzer.analyzeAndGenerate(
+          const result = await analyzer.analyzeAndGenerate(
             req.dump.repoDir,
             req.dockerImage,
             llmClient,
             sendProgress,
             { forceRegenerate: req.forceRegenerate },
+            req.dump.stack.analyzerCommand,
           );
+          schema = result.schema;
+          warnings = result.warnings;
         }
 
-        return { ok: true, schema };
+        if (warnings.length > 0) {
+          errorLogger.logSchemaWarnings({
+            dockerImage: req.dockerImage,
+            warnings,
+            repaired: true, // two-turn repair already attempted
+          });
+        }
+
+        return { ok: true, schema, warnings: warnings.length > 0 ? warnings : undefined };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         sendProgress({ stage: 'error', message: msg });
+        errorLogger.logSchemaError({ dockerImage: req.dockerImage, error: msg });
         return { ok: false, error: msg };
       }
     },
   );
 
   // ── exec:autofix ───────────────────────────────────────────────────────
-  // Asks Claude to suggest a fixed command template after a failed run.
+  // Two-turn: (1) diagnose the error class, (2) fix the command with diagnosis context.
   ipcMain.handle(
     IPCChannel.EXEC_AUTOFIX,
     async (_event, req: ExecAutofixRequest): Promise<ExecAutofixResponse> => {
@@ -534,7 +675,29 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
       try {
         const llm = makeLLMClient(config) as LLMClient | OpenAIClient;
-        const prompt = buildFixCommandPrompt(req.workflow, req.failedCommand, req.errorOutput);
+
+        // Turn 1: classify the error (small call, 256 tokens)
+        let diagnosis: { errorClass: string; shortReason: string; relevantLine?: string | null } | undefined;
+        try {
+          const diagnoseText = await llm.rawComplete(buildDiagnosePrompt(req.errorOutput, req.failedCommand), TOKEN_LIMITS.diagnosis);
+          const ds = diagnoseText.replace(/^```json\s*/m, '').replace(/```\s*$/m, '').trim();
+          const df = ds.indexOf('{'); const dl = ds.lastIndexOf('}');
+          if (df !== -1 && dl !== -1) {
+            const dp = JSON.parse(ds.slice(df, dl + 1)) as { errorClass: string; shortReason: string; relevantLine?: string | null };
+            if (dp.errorClass && dp.shortReason) diagnosis = dp;
+          }
+        } catch {
+          // Diagnosis is best-effort; continue without it
+        }
+
+        // Turn 2: fix the command, with diagnosis context and actual input values
+        const prompt = buildFixCommandPrompt(
+          req.workflow,
+          req.failedCommand,
+          req.errorOutput,
+          req.inputValues,
+          diagnosis,
+        );
         const text = await llm.rawComplete(prompt);
 
         // Strip markdown fences if present, then extract the JSON object
@@ -542,21 +705,75 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         const firstBrace = stripped.indexOf('{');
         const lastBrace = stripped.lastIndexOf('}');
         if (firstBrace === -1 || lastBrace === -1) {
-          return { ok: false, error: 'Could not parse fix suggestion from LLM response.' };
+          return { ok: false, error: 'Auto-fix: LLM returned no JSON object. Try again or check your API key.' };
         }
 
-        const parsed = JSON.parse(stripped.slice(firstBrace, lastBrace + 1)) as {
-          template: string;
-          explanation: string;
+        let parsed: { execute?: ExecAutofixResponse['execute']; explanation?: string };
+        try {
+          parsed = JSON.parse(stripped.slice(firstBrace, lastBrace + 1)) as { execute?: ExecAutofixResponse['execute']; explanation?: string };
+        } catch (parseErr) {
+          const parseMsg = parseErr instanceof Error ? parseErr.message : String(parseErr);
+          return { ok: false, error: `Auto-fix: could not parse LLM response (${parseMsg}). The model may have returned malformed JSON.` };
+        }
+
+        if (!parsed.execute || !parsed.explanation) {
+          return { ok: false, error: 'Auto-fix: LLM response was missing the execution config or explanation.' };
+        }
+
+        const updatedWorkflow: Workflow = {
+          ...req.workflow,
+          execute: buildUpdatedExecute(req.workflow.execute, parsed.execute),
         };
 
-        if (!parsed.template || !parsed.explanation) {
-          return { ok: false, error: 'LLM response missing template or explanation.' };
+        // Validate that user-text placeholders from the original template are preserved.
+        // The LLM sometimes replaces {output_filename} with the literal value used in the
+        // failed run (e.g. "merged.pdf"), which permanently breaks the template for future runs.
+        const originalCmd = describeExecution(req.workflow);
+        const fixedCmd = describeExecution(updatedWorkflow);
+        const droppedPlaceholders = (req.workflow.steps ?? [])
+          .filter((s) => s.type !== 'file_input' && s.type !== 'directory_input')
+          .map((s) => s.id)
+          .filter((id) => originalCmd.includes(`{${id}}`) && !fixedCmd.includes(`{${id}}`));
+        if (droppedPlaceholders.length > 0) {
+          return {
+            ok: false,
+            error: `Auto-fix dropped required input placeholder(s): {${droppedPlaceholders.join('}, {')}}.  The AI hardcoded a literal value instead of keeping the variable. Please try again.`,
+          };
         }
 
-        return { ok: true, template: parsed.template, explanation: parsed.explanation };
+        const warnings = validateSchemaWarnings({
+          projectId: 'autofix',
+          projectName: 'Auto-fix',
+          description: 'Validation wrapper',
+          version: '1.0.0',
+          dockerImage: req.workflow.id,
+          workflows: [updatedWorkflow],
+        });
+        if (warnings.length > 0) {
+          return { ok: false, error: `Auto-fix produced an invalid workflow: ${warnings.join('; ')}` };
+        }
+
+        errorLogger.logAutofix({
+          workflowId: req.workflow.id,
+          ok: true,
+          errorClass: diagnosis?.errorClass,
+          shortReason: diagnosis?.shortReason,
+          explanation: parsed.explanation,
+        });
+
+        return {
+          ok: true,
+          execute: {
+            executable: updatedWorkflow.execute.executable,
+            args: updatedWorkflow.execute.args,
+            shellScript: updatedWorkflow.execute.shellScript,
+          },
+          explanation: parsed.explanation,
+          diagnosis: diagnosis ? { errorClass: diagnosis.errorClass, shortReason: diagnosis.shortReason } : undefined,
+        };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
+        errorLogger.logAutofix({ workflowId: req.workflow.id, ok: false, error: msg });
         return { ok: false, error: msg };
       }
     },
@@ -568,6 +785,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     IPCChannel.SCHEMA_SAVE,
     async (_event, req: SchemaSaveRequest): Promise<SchemaSaveResponse> => {
       try {
+        const warnings = validateSchemaWarnings(req.schema);
+        if (warnings.length > 0) {
+          return { ok: false, saved: false, error: `Schema is invalid: ${warnings.join('; ')}` };
+        }
         const saved = schemaCache.saveByDockerImage(req.schema);
         return { ok: true, saved };
       } catch (err: unknown) {
@@ -612,6 +833,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         notify(`${req.owner}/${req.repo} install failed`, msg.slice(0, 100));
+        errorLogger.logInstallError({ owner: req.owner, repo: req.repo, error: msg });
         return { ok: false, error: msg };
       }
     },
@@ -687,6 +909,44 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     },
   );
 
+  // ── file:scan ─────────────────────────────────────────────────────────
+  ipcMain.handle(
+    IPCChannel.FILE_SCAN,
+    (_event, req: FileScanRequest): FileScanResponse => {
+      try {
+        const filePath = resolveAppPath(req.filePath);
+        const context = fileContextService.scan(filePath);
+        return { ok: true, context };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, error: msg };
+      }
+    },
+  );
+
+  // ── file:listRecents ──────────────────────────────────────────────────
+  ipcMain.handle(
+    IPCChannel.FILE_LIST_RECENTS,
+    (): FileListRecentsResponse => {
+      return { recents: fileContextService.listRecents() };
+    },
+  );
+
+  // ── file:applyChanges ────────────────────────────────────────────────
+  ipcMain.handle(
+    IPCChannel.FILE_APPLY_CHANGES,
+    (_event, req: FileApplyChangesRequest): FileApplyChangesResponse => {
+      try {
+        const filePath = resolveAppPath(req.filePath);
+        const context = fileContextService.applyChanges(filePath, req.changes);
+        return { ok: true, context };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, error: msg };
+      }
+    },
+  );
+
   // ── app:confirm ────────────────────────────────────────────────────────
   ipcMain.handle(
     IPCChannel.APP_CONFIRM,
@@ -715,6 +975,112 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     notify(req.title, req.body);
   });
 
+  // ── app:openExternal ──────────────────────────────────────────────────
+  ipcMain.handle(IPCChannel.APP_OPEN_EXTERNAL, async (_event, url: string): Promise<void> => {
+    await shell.openExternal(url);
+  });
+
+  // ── folder:scan ───────────────────────────────────────────────────────
+  ipcMain.handle(
+    IPCChannel.FOLDER_SCAN,
+    (_event, req: FolderScanRequest): FolderScanResponse => {
+      try {
+        const folderPath = resolveAppPath(req.folderPath);
+        const context = folderContextService.scan(folderPath);
+        return { ok: true, context };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, error: msg };
+      }
+    },
+  );
+
+  // ── folder:listRecents ────────────────────────────────────────────────
+  ipcMain.handle(
+    IPCChannel.FOLDER_LIST_RECENTS,
+    (): FolderListRecentsResponse => {
+      return { recents: folderContextService.listRecents() };
+    },
+  );
+
+  // ── folder:run ────────────────────────────────────────────────────────
+  ipcMain.handle(
+    IPCChannel.FOLDER_RUN,
+    (_event, req: FolderRunRequest): FolderRunResponse => {
+      const win = getWindow();
+
+      if (activeExecutor || activeFolderRunner) {
+        const activeId = activeRunId ?? activeFolderRunId;
+        return {
+          ok: false,
+          error: `Another run is already in progress${activeId ? ` (${activeId})` : ''}.`,
+        };
+      }
+
+      try {
+        const folderPath = resolveAppPath(req.folderPath);
+        const action = folderContextService.findAction(folderPath, req.actionId);
+        if (!action) {
+          return { ok: false, error: 'That action is no longer available for this folder.' };
+        }
+        if (action.type !== 'run' || !action.commandPreview) {
+          return { ok: false, error: 'This action cannot be run directly.' };
+        }
+
+        const runId = randomUUID();
+        const runner = new FolderActionRunner();
+        activeFolderRunner = runner;
+        activeFolderRunId = runId;
+
+        const sendLog = (stream: FolderRunLogEvent['stream'], line: string) => {
+          const event: FolderRunLogEvent = {
+            runId,
+            stream,
+            line,
+            timestamp: Date.now(),
+          };
+          win?.webContents.send(IPCChannel.FOLDER_RUN_LOG, event);
+        };
+
+        runner.run(action.commandPreview, folderPath, {
+          onLog: sendLog,
+          onUrl: (url) => {
+            const event: FolderRunUrlEvent = {
+              runId,
+              url,
+              timestamp: Date.now(),
+            };
+            win?.webContents.send(IPCChannel.FOLDER_RUN_URL, event);
+          },
+          onComplete: (result) => {
+            const event: FolderRunCompleteEvent = {
+              runId,
+              exitCode: result.exitCode,
+              error: result.error,
+              canceled: result.canceled,
+            };
+            win?.webContents.send(IPCChannel.FOLDER_RUN_COMPLETE, event);
+            activeFolderRunner = null;
+            activeFolderRunId = null;
+          },
+        });
+
+        return { ok: true, runId, action };
+      } catch (err: unknown) {
+        activeFolderRunner = null;
+        activeFolderRunId = null;
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, error: msg };
+      }
+    },
+  );
+
+  // ── folder:cancel ─────────────────────────────────────────────────────
+  ipcMain.handle(IPCChannel.FOLDER_CANCEL, async (): Promise<void> => {
+    if (!activeFolderRunner) return;
+    await activeFolderRunner.cancel();
+  });
+
   // ── project:improve ────────────────────────────────────────────────────
   // Refines an installed project's schema with user feedback via the LLM.
   ipcMain.handle(
@@ -741,6 +1107,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           llmClient,
           () => {},
           req.feedback,
+          meta.analyzerCommand,
         );
 
         // Persist the improved schema so it loads correctly next time
@@ -799,10 +1166,19 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           return { ok: false, error: 'Mock mode does not support workflow generation.' };
         }
         const raw = await (llmClient as LLMClient | OpenAIClient).rawComplete(buildAddWorkflowPrompt(req.description, req.currentSchema));
-        const parsed = JSON.parse(raw.trim());
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let parsed: any;
+        try {
+          const trimmed = raw.replace(/^```json\s*/m, '').replace(/```\s*$/m, '').trim();
+          const firstBrace = trimmed.indexOf('{');
+          const lastBrace = trimmed.lastIndexOf('}');
+          parsed = JSON.parse(firstBrace === -1 || lastBrace === -1 ? '{}' : trimmed.slice(firstBrace, lastBrace + 1));
+        } catch {
+          return { ok: false, error: 'AI returned malformed JSON for workflow generation. Please try again.' };
+        }
 
         if (parsed.feasible === false) {
-          return { ok: true, infeasible: parsed.reason ?? 'Not feasible for this tool.' };
+          return { ok: true, infeasible: (parsed.reason as string) ?? 'Not feasible for this tool.' };
         }
 
         if (!parsed.feasible || !parsed.workflow) {
@@ -811,8 +1187,13 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
         const updatedSchema = {
           ...req.currentSchema,
-          workflows: [...req.currentSchema.workflows, parsed.workflow],
+          workflows: [...req.currentSchema.workflows, parsed.workflow as Workflow],
         };
+
+        const warnings = validateSchemaWarnings(updatedSchema);
+        if (warnings.length > 0) {
+          return { ok: false, error: `AI returned an invalid workflow: ${warnings.join('; ')}` };
+        }
 
         // Persist updated schema
         const schemaPath = path.join(getProjectsDir(), req.projectId, 'schema.json');
@@ -844,7 +1225,14 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           return { ok: false, error: 'Mock mode does not support AI recommendations.' };
         }
         const raw = await (llmClient as LLMClient | OpenAIClient).rawComplete(buildRepoRecommendationPrompt(req.description));
-        const parsed = JSON.parse(raw.trim());
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let parsed: any;
+        try {
+          const trimmed = raw.trim();
+          parsed = JSON.parse(trimmed || '[]');
+        } catch {
+          return { ok: false, error: 'AI returned malformed JSON for recommendations. Please try again.' };
+        }
 
         if (!Array.isArray(parsed)) {
           return { ok: false, error: 'Unexpected response from AI.' };
@@ -892,9 +1280,15 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           return { ok: false, error: 'Mock mode does not support form fill.' };
         }
         const raw = await (llmClient as LLMClient | OpenAIClient).rawComplete(buildFormFillPrompt(req.description, req.workflow));
-        const trimmed = raw.trim();
-        const parsed = JSON.parse(trimmed === '' ? '{}' : trimmed);
-        return { ok: true, values: parsed };
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let parsed: any;
+        try {
+          const trimmed = raw.trim();
+          parsed = JSON.parse(trimmed || '{}');
+        } catch {
+          return { ok: false, error: 'AI returned malformed JSON for form fill. Please try again.' };
+        }
+        return { ok: true, values: parsed as Record<string, unknown> };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         return { ok: false, error: msg };
@@ -915,6 +1309,22 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       }
     },
   );
+
+  // ── errorLog:get ──────────────────────────────────────────────────────
+  // Returns all logged error records (newest first), plus the log file path.
+  ipcMain.handle(IPCChannel.ERROR_LOG_GET, (): ErrorLogGetResponse => {
+    const records = errorLogger.getAll();
+    return {
+      records,
+      logPath: errorLogger.getLogPath(),
+      total: records.length,
+    };
+  });
+
+  // ── errorLog:clear ────────────────────────────────────────────────────
+  ipcMain.handle(IPCChannel.ERROR_LOG_CLEAR, (): void => {
+    errorLogger.clear();
+  });
 
   // ── project:applyUpdate ────────────────────────────────────────────────
   ipcMain.handle(

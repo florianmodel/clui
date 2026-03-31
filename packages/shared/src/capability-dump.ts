@@ -60,6 +60,7 @@ export interface CapabilityDump {
     entrypoint?: string;
     entrypointConfidence: number;   // 0-1
     keyFiles: string[];
+    analyzerCommand?: string[];
   };
 
   /** README content, truncated */
